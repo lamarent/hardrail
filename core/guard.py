@@ -45,10 +45,16 @@ class Decision:
 ALLOW = Decision("allow", "", "")
 
 
+_GLOB_CACHE = {}
+
+
 def _glob_match(pattern, text):
     """Full-match glob: `*` spans anything, `?` is one character, the rest is literal (no `[seq]`)."""
-    parts = (".".join(re.escape(q) for q in p.split("?")) for p in pattern.split("*"))
-    return re.fullmatch(".*".join(parts), text, re.S) is not None
+    rx = _GLOB_CACHE.get(pattern)
+    if rx is None:
+        parts = (".".join(re.escape(q) for q in p.split("?")) for p in pattern.split("*"))
+        rx = _GLOB_CACHE[pattern] = re.compile(".*".join(parts), re.S)
+    return rx.fullmatch(text) is not None
 
 
 _strip_env = strip_env_and_wrappers
@@ -310,7 +316,9 @@ def decide(command, cwd, config):
     try:
         simples = split_commands(command)
     except ParseError as e:
-        return _unparsable(config, str(e) if str(e).startswith("payload too large") else None)
+        return _unparsable(config, str(e) if str(e).startswith("payload too") else None)
+    except RecursionError:
+        return _unparsable(config, "payload too deep to inspect; run it as a script file")
     for rule in RULES:
         d = rule(simples, config, cwd)
         if d:

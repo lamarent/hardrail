@@ -63,6 +63,22 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(cfg["_load_error"], "hardrail.config.json is not a JSON object")
         self.assertEqual(cfg["guard"]["mode"], "block")
 
+    def test_wrong_typed_section_reverts(self):
+        cfg = config.load(self._write('{"guard": [], "heavy": "build"}'))
+        self.assertEqual(cfg["guard"], config.DEFAULTS["guard"])
+        self.assertEqual(cfg["heavy"], config.DEFAULTS["heavy"])
+        self.assertEqual(cfg["_load_error"], "guard must be dict; heavy must be list")
+
+    def test_wrong_typed_nested_key_reverts(self):
+        cfg = config.load(self._write('{"guard": {"mode": "warn", "gatedActions": null}}'))
+        self.assertEqual(cfg["guard"]["mode"], "warn")
+        self.assertEqual(cfg["guard"]["gatedActions"], config.DEFAULTS["guard"]["gatedActions"])
+        self.assertEqual(cfg["_load_error"], "guard.gatedActions must be list")
+
+    def test_non_string_list_item_reverts(self):
+        cfg = config.load(self._write('{"guard": {"gatedActions": ["git push", 1]}}'))
+        self.assertEqual(cfg["guard"]["gatedActions"], config.DEFAULTS["guard"]["gatedActions"])
+
     def test_find_root_walks_up(self):
         root = fixture_root("minimal.json")
         deep = os.path.join(root, "a", "b")

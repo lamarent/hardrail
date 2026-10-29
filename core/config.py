@@ -52,7 +52,29 @@ def load(repo_root):
         return _fallback("%s: %s" % (CONFIG_NAME, e))
     if not isinstance(data, dict):
         return _fallback("%s is not a JSON object" % CONFIG_NAME)
-    return _merge(DEFAULTS, data)
+    out = _merge(DEFAULTS, data)
+    errors = []
+    _check_types(DEFAULTS, out, "", errors)
+    if errors:
+        out["_load_error"] = "; ".join(errors)[:200]
+    return out
+
+
+def _check_types(defaults, cfg, prefix, errors):
+    """Every dict/list/str default must keep its type (list items stay str); a wrong one
+    reverts to the default and the reason goes to `errors`."""
+    for key, default in defaults.items():
+        if not isinstance(default, (dict, list, str)):
+            continue
+        value = cfg.get(key)
+        bad = not isinstance(value, type(default))
+        if not bad and isinstance(default, list) and all(isinstance(x, str) for x in default):
+            bad = not all(isinstance(x, str) for x in value)
+        if bad:
+            cfg[key] = copy.deepcopy(default)
+            errors.append("%s%s must be %s" % (prefix, key, type(default).__name__))
+        elif isinstance(default, dict):
+            _check_types(default, value, prefix + key + ".", errors)
 
 
 def find_root(cwd):

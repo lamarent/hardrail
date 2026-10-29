@@ -38,6 +38,9 @@ _MAX_BODY_LINES = 200
 _MAX_BODY_BYTES = 8192
 _TOO_LARGE = "payload too large to inspect; run it as a script file"
 _SUBST_PH = '_subst_'
+_MAX_SUBST_DEPTH = 20
+_TOO_DEEP = "payload too deep or too large to inspect; run it as a script file"
+_CASE = re.compile(r'\bcase\s')
 
 
 def _check_size(text):
@@ -149,6 +152,25 @@ def _spans(p):
     return res
 
 
+def _unwrap(argv):
+    """Drop subshell parens and `case` patterns so the command words come first."""
+    if argv and argv[0].startswith('(') and argv[0] != '(':
+        argv[0] = argv[0][1:]
+    elif argv and argv[0] == '(':
+        argv = argv[1:]
+    if argv and argv[-1].endswith(')') and '(' not in argv[-1]:
+        argv[-1] = argv[-1][:-1]
+        if not argv[-1]:
+            argv = argv[:-1]
+    if argv and argv[0] == 'case' and 'in' in argv:
+        k = argv.index('in')
+        j = next((m for m in range(k + 1, len(argv)) if argv[m].endswith(')')), None)
+        argv = argv[j + 1:] if j is not None else []
+    elif argv and len(argv[0]) > 1 and argv[0].endswith(')') and '(' not in argv[0]:
+        argv = argv[1:]
+    return argv
+
+
 def _split_plain(text):
     prot, idx = _protect(text)
     lex = shlex.shlex(prot, posix=True, punctuation_chars=_SEPS)
@@ -171,7 +193,9 @@ def _split_plain(text):
                 raw = text[idx[first]:idx[last - 1] + 1]
             else:
                 raw = ' '.join(cur)
-            result.append(Simple(argv=list(cur), raw=raw))
+            argv = _unwrap(list(cur))
+            if argv:
+                result.append(Simple(argv=argv, raw=raw))
             cur.clear()
 
     for k, tok in enumerate(tokens):
@@ -267,7 +291,7 @@ def _find_heredoc(line, q):
 
 def _pipes_to_shell(after):
     """True when a later stage of the pipeline in `after` is a shell reading stdin."""
-    prot = _protect(after)[0]
+    prot = _protect(after)[0].replace('|&', '| ')
     end = len(prot)
     for k, ch in enumerate(prot):
         if ch in ';&\n' or (ch == '|' and prot[k + 1:k + 2] == '|'):
@@ -298,15 +322,19 @@ def _skip_bodies(cmd, i, pending):
     return i
 
 
-def _walk(cmd, i, close):
+def _walk(cmd, i, close, level=0):
     """Scan cmd from i for command substitutions.
 
     `close` is None at the top level, else ')' or '`' for the substitution being scanned.
     Returns (index after the closing char, [(start, body_start, body_end, end)]) for the
     substitutions found directly at this level (nested ones are found when the body is split).
     Process substitutions `<(...)` / `>(...)` count too. Single quotes and heredoc bodies
-    are skipped; `$((` arithmetic yields no body.
+    are skipped; `$((` arithmetic is not a command, but substitutions inside it are returned.
+    A body containing `case` runs to the last `)` of the string (patterns end in `)`).
+    Nesting deeper than _MAX_SUBST_DEPTH raises ParseError.
     """
+    if level > _MAX_SUBST_DEPTH:
+        raise ParseError(_TOO_DEEP)
     n = len(cmd)
     q = None
     depth = 0
@@ -326,8 +354,12 @@ def _walk(cmd, i, close):
             return i + 1, found
         if c == '`' or cmd.startswith('$(', i) or (q is None and cmd.startswith(('<(', '>('), i)):
             body = i + (1 if c == '`' else 2)
-            end = _walk(cmd, body, '`' if c == '`' else ')')[0]
-            if not cmd.startswith('$((', i):
+            end, inner = _walk(cmd, body, '`' if c == '`' else ')', level + 1)
+            if cmd.startswith('$((', i):
+                found.extend(inner)
+            else:
+                if c != '`' and _CASE.search(cmd, body, end - 1):
+                    end = cmd.rfind(')') + 1
                 found.append((i, body, end - 1, end))
             i = end
             continue
@@ -368,6 +400,8 @@ def _extract_substs(cmd):
     if '$(' not in cmd and '`' not in cmd and '<(' not in cmd and '>(' not in cmd:
         return cmd, []
     found = _walk(cmd, 0, None)[1]
+    if sum(end - start for start, _, _, end in found) > _MAX_BODY_BYTES:
+        raise ParseError(_TOO_DEEP)
     out = []
     bodies = []
     last = 0
@@ -424,8 +458,10 @@ def split_commands(cmd):
         for inner in split_commands(body):
             inner.payload_of = inner.payload_of or 'heredoc'
             out.append(inner)
-    for body in substs:
-        for inner in split_commands(body):
+    if substs:
+        # One parse for all bodies: they share payload_of, and each body is quote-balanced
+        # (the walker raised otherwise), so a newline keeps them apart.
+        for inner in split_commands('\n'.join(substs)):
             inner.payload_of = inner.payload_of or 'subst'
             out.append(inner)
     return out

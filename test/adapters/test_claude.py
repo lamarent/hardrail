@@ -95,6 +95,19 @@ class ClaudeHookTest(unittest.TestCase):
         self.assertTrue(lines[0].endswith("), using defaults"), r.stderr)
         self.assertTrue(lines[1].startswith("BLOCKED [unscoped_test]"), r.stderr)
 
+    def test_wrong_typed_config_still_enforces(self):
+        for text in ('{"guard": []}', '{"guard": {"gatedActions": null}}'):
+            with self.subTest(config=text):
+                d = tempfile.mkdtemp()
+                self.addCleanup(shutil.rmtree, d, True)
+                with open(os.path.join(d, "hardrail.config.json"), "w", encoding="utf-8") as f:
+                    f.write(text)
+                r = run_hook("git commit -m x && ls", hook_cwd=d)
+                self.assertEqual(r.returncode, 2, r.stderr)
+                lines = r.stderr.splitlines()
+                self.assertTrue(lines[0].startswith("hardrail: config ignored (guard"), r.stderr)
+                self.assertTrue(lines[1].startswith("BLOCKED [chained_gated]"), r.stderr)
+
     def test_snippet_uses_project_dir(self):
         with open(os.path.join(ROOT, "adapters", "claude", "hooks.snippet.json"), encoding="utf-8") as f:
             snippet = json.load(f)
