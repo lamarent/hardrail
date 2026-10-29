@@ -271,7 +271,7 @@ cannot replace a parsed guard.
 | generated workflow | `actionlint`; run on fixture (`act` or this repo's Actions) | green on clean fixture, red on a planted violation |
 | rule render | snapshot from sample config | no placeholder left |
 | metrics blocks | synthetic transcripts with known counts incl. subagent dir | exact counts |
-| name leak | local pre-push denylist (not shipped) + CI regex (ticket ids, `/Users/`, `/home/`, emails, internal domains) | zero hits before first push |
+| name leak | local pre-push denylist (not shipped) + CI regex (ticket ids, home-directory paths, emails, internal domains) | zero hits before first push |
 | contract (nightly) | latest `claude` CLI headless on fixture with hook registered | `pnpm test` → `BLOCKED` on stderr |
 | acceptance | a public TS repo the owner never worked in: `init` → smoke → `pnpm test` blocked → PR with a code change | hook blocks, CI picks the right tests, no repo file modified |
 
