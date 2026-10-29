@@ -3,8 +3,8 @@
 import os
 import re
 
-from core.shell import (_SHELLS, DOAS_VALUE_OPTS, SUDO_VALUE_OPTS, ParseError, scan_opts,
-                        variable_command_word)
+from core.shell import (DOAS_VALUE_OPTS, SHELLS, SUDO_VALUE_OPTS, WRAPPER_OPTS, ParseError,
+                        scan_known, scan_opts, variable_command_word, wrapper_c_payload)
 
 _ENV = re.compile(r'^[A-Za-z_]\w*=')
 WRAPPERS = {  # name -> options that take a value (next word)
@@ -15,9 +15,13 @@ WRAPPERS = {  # name -> options that take a value (next word)
     'ionice': ('-c', '-n', '-p'), 'stdbuf': ('-i', '-o', '-e'), 'chronic': (),
     'xargs': ('-I', '-n', '-P', '-d', '-L', '-s', '-E', '-a', '--max-args', '--max-procs', '--delimiter'),
 }
-POSITIONAL_AFTER = {'timeout': 1}   # words consumed after the options (the duration)
+for _name in ('flock', 'unbuffer', 'caffeinate', 'script'):  # options checked by scan_known
+    WRAPPERS[_name] = WRAPPER_OPTS[_name][0]
+# Words consumed after the options: the duration, the lock file, the log file.
+POSITIONAL_AFTER = {'timeout': 1, 'flock': 1, 'script': 1}
 # Commands xargs may build from piped input: they only read.
-XARGS_READ_ONLY = ('ls', 'cat', 'grep', 'rg', 'wc', 'head', 'tail', 'stat', 'file', 'echo')
+XARGS_READ_ONLY = ('ls', 'cat', 'grep', 'rg', 'wc', 'head', 'tail', 'stat', 'file', 'echo',
+                   'basename', 'dirname')
 XARGS_ERR = "xargs builds the command from stdin; run it as a script file or list the files explicitly"
 MANAGERS = ('pnpm', 'npm', 'yarn', 'bun')
 # Manager options that take the next word as their value (`--opt=value` is one word).
@@ -28,7 +32,10 @@ NPM_WORKSPACE_FLAGS = ('-w', '--workspace')     # value flags for npm only
 
 def _skip_wrapper_opts(name, argv, i):
     """Index of the first word after the options of the wrapper whose name is argv[i - 1]."""
-    i, seen = scan_opts(argv, i, WRAPPERS[name])
+    if name in WRAPPER_OPTS:
+        i, seen = scan_known(name, argv, i), []
+    else:
+        i, seen = scan_opts(argv, i, WRAPPERS[name])
     if name == 'env' and ('-S' in seen or '--split-string' in seen):
         raise ParseError("env -S payload cannot be inspected")
     for _ in range(POSITIONAL_AFTER.get(name, 0)):
@@ -49,6 +56,8 @@ def _strip(argv):
         name = os.path.basename(w)
         if name not in WRAPPERS:
             break
+        if name in ('flock', 'script') and wrapper_c_payload(name, argv[i + 1:]) is not None:
+            break  # runs a -c text: split_commands inspects it as a payload
         xargs = xargs or name == 'xargs'
         i = _skip_wrapper_opts(name, argv, i + 1)
     return i, xargs
@@ -64,7 +73,7 @@ def strip_env_and_wrappers(argv):
     """
     i, xargs = _strip(argv)
     rest = argv[i:]
-    if xargs and (not rest or os.path.basename(rest[0]) in _SHELLS):
+    if xargs and (not rest or os.path.basename(rest[0]) in SHELLS):
         raise ParseError(XARGS_ERR)
     if rest and variable_command_word(rest[0]):
         raise ParseError("command word is a variable; write the command literally")

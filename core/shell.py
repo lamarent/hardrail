@@ -7,7 +7,7 @@ import shlex
 _SEPS = ';&|\n'
 _SENT = {c: chr(0xE000 + i) for i, c in enumerate(_SEPS)}
 _UNSENT = {v: k for k, v in _SENT.items()}
-_SHELLS = ('bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'ash', 'busybox', 'ksh93', 'fish')
+SHELLS = ('bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'ash', 'busybox', 'ksh93', 'fish')
 _HEREDOC_PH = '_heredoc_'
 _HD_STOP = ' \t\r\n;&|<>()'
 _C_FLAG = re.compile(r'-[A-Za-z]*c[A-Za-z]*')
@@ -26,6 +26,36 @@ _SHELL_WRAPPERS = {
     'doas': (DOAS_VALUE_OPTS, ('-s',)),
 }
 _ASSIGN = re.compile(r'^[A-Za-z_]\w*=')
+_SOURCE = ('source', '.')
+# Wrappers whose options are modelled in full: name -> (value options, flag options).
+# Any other option raises ParseError, since it could hide the command word.
+WRAPPER_OPTS = {
+    'flock': (('-w', '--wait', '--timeout', '-E', '--conflict-exit-code', '-c', '--command'),
+              ('-s', '--shared', '-x', '-e', '--exclusive', '-u', '--unlock', '-n', '--nb',
+               '--nonblock', '-o', '--close', '-F', '--no-fork', '--verbose')),
+    'unbuffer': ((), ('-p',)),
+    'caffeinate': (('-t', '-w'), ('-d', '-i', '-m', '-s', '-u')),
+    'script': (('-c', '--command', '-t', '-T', '--log-timing', '-B', '--log-io', '-I', '--log-in',
+                '-O', '--log-out', '-E', '--echo', '-m', '--logging-format'),
+               ('-a', '--append', '-e', '--return', '-f', '--flush', '-q', '--quiet', '-k', '-F',
+                '-r', '-p')),
+    'watch': (('-n', '--interval', '-q', '--equexit'),
+              ('-b', '--beep', '-c', '--color', '-C', '--no-color', '-d', '--differences', '-e',
+               '--errexit', '-g', '--chgexit', '-p', '--precise', '-t', '--no-title', '-w',
+               '--no-wrap', '-x', '--exec', '-r', '--no-rerun')),
+    'ssh': (('-B', '-b', '-c', '-D', '-E', '-e', '-F', '-I', '-i', '-J', '-L', '-l', '-m', '-O',
+             '-o', '-P', '-p', '-Q', '-R', '-S', '-W', '-w'),
+            ('-4', '-6', '-A', '-a', '-C', '-f', '-G', '-g', '-K', '-k', '-M', '-N', '-n', '-q',
+             '-s', '-T', '-t', '-V', '-v', '-X', '-x', '-Y', '-y')),
+    'parallel': (('-j', '--jobs', '-N', '-n', '--max-args', '-a', '--arg-file', '-I', '-d',
+                  '--delimiter', '-S', '--sshlogin', '--joblog', '--results', '--timeout', '--halt',
+                  '--retries', '--tmpdir', '-C', '--colsep'),
+                 ('-k', '--keep-order', '-v', '--verbose', '-q', '--quote', '--dry-run', '--tag',
+                  '--line-buffer', '--lb', '--progress', '--bar', '--eta', '-0', '--null', '-u',
+                  '--ungroup', '-X', '-m', '--xapply', '--link', '--pipe', '--group',
+                  '--will-cite', '--no-notice', '-r', '--no-run-if-empty')),
+}
+_PARALLEL_SEPS = (':::', '::::', ':::+', '::::+')
 _REDIR = re.compile(r'^\d*[<>]{1,2}&?\S*$')
 _BARE_REDIR = ('<', '>', '>>', '2>', '&>', '&>>')
 _MAX_INPUT = 65536
@@ -249,7 +279,7 @@ def _split_plain(text):
         sp = sep[:2]
         if argv:
             # A compound command's output piped into a shell cannot be traced to one simple.
-            if closed and _is_pipe(sp) and _is_shell_reader(argv):
+            if closed and is_pipe(sp) and _is_shell_reader(argv):
                 raise ParseError(_PIPE_ERR)
             result.append(Simple(argv=argv, raw=raw, sep=sp))
         closed = was_closed
@@ -273,7 +303,7 @@ def _split_plain(text):
     return result
 
 
-def _is_pipe(sep):
+def is_pipe(sep):
     """True for `|`, `|&` or a pipe followed by a newline (not `||`)."""
     return sep[:1] == '|' and sep[1:2] != '|'
 
@@ -303,7 +333,9 @@ def _clean(argv):
     """
     if _SUBST_PH in argv:
         k = argv.index(_SUBST_PH)
-        if any(os.path.basename(w) in _SHELLS for w in argv[:k]):
+        b = _builtin_index(argv)
+        if any(os.path.basename(w) in SHELLS for w in argv[:k]) or \
+                (b is not None and b < k and argv[b] in _SOURCE):
             raise ParseError("script from a process substitution cannot be inspected; "
                              "run it as a script file")
     return _drop_redirects(argv)
@@ -388,8 +420,9 @@ def _payload_of(argv):
         k += 1
     if k < len(argv) and variable_command_word(argv[k]):
         raise ParseError("command word is a variable; write the command literally")
-    if argv and argv[0] == 'eval' and len(argv) > 1:
-        return ' '.join(argv[1:]), 'eval'
+    b = _builtin_index(argv)
+    if b is not None and argv[b:b + 1] == ['eval'] and len(argv) > b + 1:
+        return ' '.join(argv[b + 1:]), 'eval'
     for j, w in enumerate(argv):
         if w.startswith('<<<'):
             text = w[3:] if len(w) > 3 else (argv[j + 1] if j + 1 < len(argv) else '')
@@ -397,7 +430,7 @@ def _payload_of(argv):
                 _check_size(text)
                 return text, 'heredoc'
     for j, w in enumerate(argv):
-        if os.path.basename(w) in _SHELLS:
+        if os.path.basename(w) in SHELLS:
             r = _shell_scan(argv, j)
             if r and r[0] == 'c':
                 return argv[r[1]], 'sh -c'
@@ -408,7 +441,91 @@ def _payload_of(argv):
         if text is not None:
             _check_size(text)
             return text, 'sh -c'
+    text = _runner_text(argv)
+    if text is not None:
+        _check_size(text)
+        return text, 'sh -c'
     return None
+
+
+def scan_known(name, argv, i):
+    """scan_opts for a wrapper in WRAPPER_OPTS: index after its options; an option the
+    table does not model raises ParseError."""
+    values, flags = WRAPPER_OPTS[name]
+    i, seen = scan_opts(argv, i, values)
+    bad = [o for o in seen if o not in values and o not in flags]
+    if bad:
+        raise ParseError("%s option %s is not modelled, so the command it runs cannot be found; "
+                         "write the command without it" % (name, bad[0]))
+    return i
+
+
+def wrapper_c_payload(name, rest):
+    """The text `flock` / `script` run through a shell with -c / --command, else None."""
+    k = scan_known(name, rest, 0)
+    after = rest[k + 1:k + 3]  # -c may also follow the lock / log file
+    for words in (rest[:k], after):
+        for m, w in enumerate(words):
+            if w.startswith('--command='):
+                return w.partition('=')[2]
+            if w == '--command' or (w[:1] == '-' and w[1:2] != '-' and w.endswith('c')):
+                return words[m + 1] if m + 1 < len(words) else ''
+            if words is after:
+                break
+    return None
+
+
+def _runner_text(argv):
+    """Text a command-running tool hands to a shell: `watch`, `ssh host`, `parallel`, and
+    `flock` / `script` with -c. Only the command word (after env and wrappers) counts."""
+    from core.argv import strip_env_and_wrappers  # argv imports this module
+    try:
+        rest = strip_env_and_wrappers(argv)[1]
+    except ParseError:
+        return None  # the rules report it
+    name = os.path.basename(rest[0]) if rest else ''
+    if name in ('flock', 'script'):
+        return wrapper_c_payload(name, rest[1:])
+    if name == 'watch':
+        k = scan_known(name, rest, 1)
+        return ' '.join(rest[k:]) or None
+    if name == 'ssh':
+        k = scan_known(name, rest, 1)
+        k = scan_known(name, rest, k + 1) if k < len(rest) else k  # options may follow the host
+        return ' '.join(rest[k:]) or None
+    if name == 'parallel':
+        words = rest[scan_known(name, rest, 1):]
+        cut = next((m for m, w in enumerate(words) if w in _PARALLEL_SEPS), len(words))
+        if not words[:cut]:
+            raise ParseError("parallel runs commands read from its input; run it as a script file")
+        return ' '.join(words[:cut])
+    return None
+
+
+def _builtin_index(argv):
+    """Index of the command word after assignments and `builtin` / `command`; None for
+    `command -v|-V` (a lookup, nothing runs)."""
+    k = 0
+    while k < len(argv) and _ASSIGN.match(argv[k]):
+        k += 1
+    while k < len(argv) and argv[k] in ('builtin', 'command'):
+        k += 1
+        while k < len(argv) and argv[k] in ('-p', '--'):
+            k += 1
+        if k < len(argv) and argv[k] in ('-v', '-V'):
+            return None
+    return k
+
+
+def _source_reader(argv):
+    """`source` / `.` of stdin (`-`, /dev/stdin, /dev/fd/0): it runs what it reads."""
+    b = _builtin_index(argv)
+    if b is None or argv[b:b + 1] not in (['source'], ['.']):
+        return False
+    rest = argv[b + 1:]
+    if rest[:1] == ['--']:
+        rest = rest[1:]
+    return rest[:1] != [] and rest[0] in _STDIN_SCRIPT
 
 
 def variable_command_word(word):
@@ -474,10 +591,10 @@ def _su_reader(argv):
 
 def _is_shell_reader(argv):
     argv = _clean(argv)
-    if argv and _su_reader(argv):
+    if argv and (_su_reader(argv) or _source_reader(argv)):
         return True
     for j, w in enumerate(argv):
-        if os.path.basename(w) in _SHELLS:
+        if os.path.basename(w) in SHELLS:
             r = _shell_scan(argv, j)
             if r and r[0] == 'flags':
                 return True
@@ -778,7 +895,7 @@ def split_commands(cmd):
     prev = None
     for s in _split_plain(rest):
         out.append(s)
-        if _is_pipe(s.sep) and _is_shell_reader(s.argv):
+        if is_pipe(s.sep) and _is_shell_reader(s.argv):
             # The shell runs what the previous stage writes: only literal echo / printf
             # text is known; a heredoc body was inspected already.
             if prev is None:

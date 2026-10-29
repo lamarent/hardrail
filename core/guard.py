@@ -7,7 +7,7 @@ import shlex
 from core.argv import XARGS_ERR, skip_manager_opts, strip_env_and_wrappers, xargs_writes_command
 from core.config import find_root
 from core.packages import Package, find_workspace_root, resolve_package
-from core.shell import ParseError, _is_pipe, scan_opts, split_commands
+from core.shell import ParseError, is_pipe, scan_opts, split_commands
 
 _PATH_ARG = re.compile(r'\.(test|spec)\.(ts|tsx|js|jsx)$')
 _SHORT_F = re.compile(r'^-[A-Za-z]*f[A-Za-z]*$')
@@ -247,7 +247,7 @@ def _gated_forms(c):
 
 def rule_xargs_stdin(simples, config, cwd="."):
     for s in simples:
-        if _is_pipe(s.sep) and xargs_writes_command(s.argv):
+        if is_pipe(s.sep) and xargs_writes_command(s.argv):
             return _unparsable(config, XARGS_ERR)
     return None
 
