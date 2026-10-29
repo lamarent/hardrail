@@ -154,12 +154,12 @@ def _runner(argv, config):
     return None
 
 
-def _paths(args, cwd):
+def _paths(args, cwd, vitest):
     """The words in runner/script args that name a test path: not flags, not flag values,
     and either path-shaped, a jest path-pattern value, or an existing file/dir under cwd."""
     out = []
     i = 0
-    leading = True
+    leading = vitest  # only vitest has subcommands
     while i < len(args):
         a = args[i]
         i += 1
@@ -303,7 +303,7 @@ def _watch_fix(s, config, cwd):
         return None
     name, args = hit
     explicit = _explicit_watch(args) or (name == 'vitest' and _vitest_sub(args) in ('watch', 'dev'))
-    paths = _paths(args, cwd)
+    paths = _paths(args, cwd, name != 'jest')
     fix = _fix_cmd(argv, name, args, paths[0] if paths else _PLACEHOLDER, config)
     if name == 'jest':
         return "run once: " + fix if explicit else None
@@ -334,14 +334,16 @@ def _unscoped_decision(s, prev, name, args,
     root = find_root(cwd) or cwd
     pkg = resolve_package(s, cwd, config, root, prev=prev)
     base = config['defaults']['test']
-    paths = _paths(args, cwd)
+    script = pkg.test_script.split() if isinstance(pkg, Package) and pkg.test_script else []
+    script_runner = os.path.basename(script[0]) if script else None
+    paths = _paths(args, cwd, name == 'vitest' or (name not in _RUNNERS and script_runner != 'jest'))
     path = paths[0] if paths else _PLACEHOLDER
     if pkg == "all":
         cmd = ('pnpm --filter <name> ' + base[5:]) if base.startswith('pnpm ') else base
         return _result("block", "unscoped_test",
                        f"this runs every workspace package; target one package: {cmd} {path}", config)
     if isinstance(pkg, Package) and name not in _RUNNERS and pkg.test_script \
-            and _paths(pkg.test_script.split()[1:], pkg.root):
+            and _paths(script[1:], pkg.root, script_runner == 'vitest'):
         rel = os.path.relpath(pkg.root, os.path.abspath(cwd))
         fix = _fix_cmd(argv, name, args, path, config)
         if rel != '.':

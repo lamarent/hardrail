@@ -321,4 +321,8 @@ ROWS = [
     ("vitest watch src/a.test.ts", "block", "watch_mode"),
     ("vitest related --run src", "allow", "", FX + "/packages/api"),
     ("vitest run src", "allow", "", FX + "/packages/api"),
+    # review: the subcommand skip is for vitest only; jest has no subcommands
+    ("pnpm test src/a.test.ts", "block", "unscoped_test", NAMES + "/jest-list"),
+    ("pnpm test src/a.test.ts", "allow", "", NAMES + "/vitest-list"),
+    ("jest run", "allow", "", NAMES),
 ]
