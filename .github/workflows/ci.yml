@@ -16,8 +16,8 @@ jobs:
             name: ubuntu-latest
           - os: macos-latest
             name: macos-latest
-          - os: ubuntu-latest
-            name: ubuntu-latest, py3.9
+          - os: ubuntu-22.04  # ubuntu-latest (26.04) has no python 3.9 build
+            name: ubuntu-22.04, py3.9
             python-version: "3.9"
     runs-on: ${{ matrix.os }}
     steps:
