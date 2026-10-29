@@ -7,14 +7,15 @@ import shlex
 _SEPS = ';&|\n'
 _SENT = {c: chr(0xE000 + i) for i, c in enumerate(_SEPS)}
 _UNSENT = {v: k for k, v in _SENT.items()}
-_SHELLS = ('bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'ash', 'busybox')
+_SHELLS = ('bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'ash', 'busybox', 'ksh93', 'fish')
 _HEREDOC_PH = '_heredoc_'
 _HD_STOP = ' \t\r\n;&|<>()'
 _C_FLAG = re.compile(r'-[A-Za-z]*c[A-Za-z]*')
 _KEYWORDS = ('if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', '{', 'time', 'coproc')
 _CLOSERS = ('fi', 'done', 'esac', '}')
 _FUNC_DEF = re.compile(r'^\w+\(\)\{?$')
-_VAR_WORD = re.compile(r'^"?\$\{?[\w@*]+\}?"?$')
+_STDIN_SCRIPT = ('-', '/dev/stdin', '/dev/fd/0')
+_SUDO_VALUE_OPTS = ('-u', '-g', '-C', '-D', '-h', '-p', '-R', '-T', '-U')
 _ASSIGN = re.compile(r'^[A-Za-z_]\w*=')
 _REDIR = re.compile(r'^\d*[<>]{1,2}&?\S*$')
 _BARE_REDIR = ('<', '>', '>>', '2>', '&>', '&>>')
@@ -185,6 +186,8 @@ def _unwrap(argv):
             argv = argv[1:]
             if w == 'time' and argv[:1] == ['-p']:
                 argv = argv[1:]
+            if w == 'time' and argv[:1] == ['--']:
+                argv = argv[1:]
         elif w == 'function' and len(argv) > 1:
             argv = argv[2:]
         elif w.startswith('('):
@@ -302,8 +305,9 @@ def _shell_scan(argv, j):
 
     Returns ('c', payload_index) for a -c flag (the payload is the first non-option word,
     or the word after `--`), ('flags', index) if only options follow or -s (read from
-    stdin) is given, else None. The value after -o / -O / +o / +O / --rcfile /
-    --init-file is skipped.
+    stdin) is given, else None. A script word `-`, /dev/stdin or /dev/fd/0 also reads
+    stdin. One value word is skipped per `o` / `O` letter in a short-option cluster
+    (`-oc pipefail`, `-O extglob`), and after --rcfile / --init-file.
     """
     n = len(argv)
     k = j + 1
@@ -325,10 +329,10 @@ def _shell_scan(argv, j):
             want_c = True
         elif w[0] == '-' and 's' in w[1:]:
             want_s = True
-        k += 2 if w[-1] in 'oO' else 1
+        k += 1 + w.count('o') + w.count('O')
     if want_c:
         return ('c', k) if k < n else None
-    if want_s or k >= n:
+    if want_s or k >= n or argv[k] in _STDIN_SCRIPT:
         return 'flags', k
     return None
 
@@ -336,13 +340,14 @@ def _shell_scan(argv, j):
 def _payload_of(argv):
     """Return (text, kind) for the first sh -c / eval payload in argv, else None.
 
-    A variable as the command word (`$cmd`, `"$@"`) raises ParseError.
+    A command word built from a variable (`$cmd`, `"$@"`, `g${x}`) raises ParseError;
+    a path with a variable prefix (`$HOME/bin/tool`) is allowed.
     """
     argv = _clean(argv)
     k = 0
     while k < len(argv) and _ASSIGN.match(argv[k]):
         k += 1
-    if k < len(argv) and _VAR_WORD.match(argv[k]):
+    if k < len(argv) and '$' in argv[k] and '/' not in argv[k]:
         raise ParseError("command word is a variable; write the command literally")
     if argv and argv[0] == 'eval' and len(argv) > 1:
         return ' '.join(argv[1:]), 'eval'
@@ -360,8 +365,28 @@ def _payload_of(argv):
     return None
 
 
+def _su_reader(argv):
+    """`sudo -s` / `sudo -i` or `su [user]` with no command: an interactive shell on stdin."""
+    name = os.path.basename(argv[0])
+    rest = argv[1:]
+    if name == 'su':
+        rest = [w for w in rest if not w.startswith('-')]
+        return len(rest) <= 1
+    if name != 'sudo':
+        return False
+    shell = False
+    k = 0
+    while k < len(rest) and rest[k].startswith('-') and rest[k] != '--':
+        w = rest[k]
+        shell = shell or (not w.startswith('--') and ('s' in w[1:] or 'i' in w[1:]))
+        k += 2 if w in _SUDO_VALUE_OPTS else 1
+    return shell and k >= len(rest)
+
+
 def _is_shell_reader(argv):
     argv = _clean(argv)
+    if argv and _su_reader(argv):
+        return True
     for j, w in enumerate(argv):
         if os.path.basename(w) in _SHELLS:
             r = _shell_scan(argv, j)
@@ -669,7 +694,10 @@ def split_commands(cmd):
             # text is known; a heredoc body was inspected already.
             if prev is None:
                 raise ParseError(_PIPE_ERR)
-            if _HEREDOC_PH not in prev.argv:
+            if _HEREDOC_PH in prev.argv:
+                if _drop_redirects(prev.argv) != ['cat', _HEREDOC_PH]:
+                    raise ParseError(_PIPE_ERR)
+            else:
                 for inner in split_commands(_pipe_payload(prev.argv)):
                     inner.payload_of = inner.payload_of or 'pipe'
                     out.append(inner)
