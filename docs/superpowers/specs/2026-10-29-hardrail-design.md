@@ -62,6 +62,8 @@ same report on the adopter's own transcripts.
 - Hook p95 latency < 100 ms, measured in this repo's CI, cold and warm.
 - Minimum Claude Code version pinned in the manifest (the version where plugin `bin/`,
   `${CLAUDE_PLUGIN_DATA}`, `PostCompact` and `.worktreeinclude` all exist).
+- One language: python3 ≥ 3.9 stdlib for core, adapters and `bin/hardrail`. No Node
+  anywhere in this repo; adopters' Node tooling is only invoked, never required to run us.
 - Licence MIT. Public repo `hardrail`; plugin name `hardrail` (names starting
   with `claude-` are reserved).
 - macOS and Linux. Windows out of v1.
@@ -293,7 +295,7 @@ third tier.
 ```
 hardrail/
   .claude-plugin/plugin.json      # name: hardrail
-  bin/hardrail                    # init | check | upgrade | render | ci | metrics (Node, no deps)
+  bin/hardrail                    # init | check | upgrade | render | ci | metrics (python3 stdlib, no deps)
   core/                           # decide(), mapping, render, metrics schema (python3 stdlib)
   adapters/claude/ adapters/none/ # thin shims copied into adopters
   templates/rules/ templates/skills/ templates/agents/ templates/workflows/
