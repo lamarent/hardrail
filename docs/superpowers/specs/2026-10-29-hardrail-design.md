@@ -219,6 +219,43 @@ DATE]` prints per-session rates. Everything else in measurement is v1.1.
 metric that counts it · what lower tiers tried. v1 ships one complete entry (unscoped
 tests); others follow with the same template. No counts.
 
+## Claude Code compatibility
+
+### Mechanisms used (nothing patched)
+
+| hardrail part | Claude Code mechanism | Verified 2026-10-29 |
+|---|---|---|
+| `bash-guard` | `PreToolUse` hook, matcher `Bash`, registered in `.claude/settings.json`; exit 2 blocks; the agent reads **stderr** only | yes |
+| `worktree-guard` | `PreToolUse` hook, matcher `Edit\|Write`; `$CLAUDE_PROJECT_DIR` names the main checkout | yes |
+| guard-rail rules | `.claude/rules/*.md` without `paths:` load at launch like CLAUDE.md | yes |
+| skills | `.claude/skills/<name>/SKILL.md`, selected from `description` | yes |
+| agent `runner` | `.claude/agents/runner.md` with `model`, `tools` | plugin agents honour a subset of frontmatter — verify at build |
+| `metrics blocks` | transcripts in `~/.claude/projects/<slug>/` (+ `subagents/`); `isCompactSummary`, `toolDenialKind`, `hook error:` lines; `CLAUDE_CONFIG_DIR` moves the tree | yes, on real transcripts |
+| `compaction-count` | `PostCompact` hook | yes |
+| worktree | `.worktreeinclude` copies git-ignored files into new worktrees | yes |
+| team distribution | `.claude/settings.json` committed → every clone has the hooks; `extraKnownMarketplaces` + `enabledPlugins` prompt plugin install | project-scope prompt **not verified** |
+| plugin | `.claude-plugin/plugin.json`, `hooks/hooks.json`, `bin/` on PATH, `${CLAUDE_PLUGIN_DATA}`; names starting `claude-` reserved | yes |
+| CI | none; the workflow reads `hardrail.config.json` | independent |
+
+Not provided by Claude Code, so hardrail does it: a plugin cannot inject always-loaded
+rules (`init` copies them into the repo); `permissions.deny` matches prefixes only, so it
+cannot replace a parsed guard.
+
+### Staying compatible across Claude Code updates
+
+1. Everything Claude-specific lives in the `claude` adapter (≤ 30 lines). A format change
+   touches the shim, never core or its tests.
+2. **Contract test on the real CLI, nightly**: CI installs the latest `claude`, runs it
+   headless on a fixture repo with the hook registered, and asserts `BLOCKED` on stderr
+   for `pnpm test`. A breaking release is known within a day.
+3. **Versioned fixtures**: `test/fixtures/claude/<version>/` holds real PreToolUse stdin
+   JSON and transcript excerpts per tested version; adapter and metrics tests run on all.
+4. `hardrail check` compares `claude --version` with `minVersion` / `testedUpTo` in the
+   manifest; above `testedUpTo` warns, never blocks.
+5. **Loud fail-open**: unparsable hook input → stderr `hardrail: unexpected hook input,
+   guard disabled`, exit 0. CI remains the backstop.
+6. `claude plugin validate --strict` in CI for the manifest.
+
 ## Verification (what this repo's CI proves)
 
 | Part | Test | Pass criterion |
@@ -233,6 +270,7 @@ tests); others follow with the same template. No counts.
 | rule render | snapshot from sample config | no placeholder left |
 | metrics blocks | synthetic transcripts with known counts incl. subagent dir | exact counts |
 | name leak | local pre-push denylist (not shipped) + CI regex (ticket ids, `/Users/`, `/home/`, emails, internal domains) | zero hits before first push |
+| contract (nightly) | latest `claude` CLI headless on fixture with hook registered | `pnpm test` → `BLOCKED` on stderr |
 | acceptance | a public TS repo the owner never worked in: `init` → smoke → `pnpm test` blocked → PR with a code change | hook blocks, CI picks the right tests, no repo file modified |
 
 README evidence tiers: **verified by this repo's CI** and **reproducible by you**. No
