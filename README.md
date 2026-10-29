@@ -168,7 +168,7 @@ Only box 2 exists today. One Bash call goes through:
 3. **tokenizer** — splits on `;`, `&&`, `||`, `|`, `&`, newlines; quote- and
    comment-aware; parses anything another shell would run (`sh -c`, `eval`, heredocs fed
    to a shell, `source /dev/stdin`, `$(…)`, backticks, `<(…)`, `watch`, `ssh <host>`,
-   `parallel`, `flock -c`, `script -c`) as its own chain.
+   `parallel`, `flock -c`, `script -c`, `npx -c`) as its own chain.
 4. **rules**, in the order above; first hit wins.
 5. **package resolution** for `unscoped_test` (see [Monorepos](#monorepos)).
 

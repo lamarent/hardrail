@@ -423,6 +423,12 @@ def _payload_of(argv):
     b = _builtin_index(argv)
     if b is not None and argv[b:b + 1] == ['eval'] and len(argv) > b + 1:
         return ' '.join(argv[b + 1:]), 'eval'
+    if 'parallel' in map(os.path.basename, argv):
+        # before the shell scan: `parallel sh -c ::: x` must not read ':::' as the -c text
+        text = _runner_text(argv)
+        if text is not None:
+            _check_size(text)
+            return text, 'sh -c'
     for j, w in enumerate(argv):
         if w.startswith('<<<'):
             text = w[3:] if len(w) > 3 else (argv[j + 1] if j + 1 < len(argv) else '')
@@ -494,11 +500,52 @@ def _runner_text(argv):
         k = scan_known(name, rest, k + 1) if k < len(rest) else k  # options may follow the host
         return ' '.join(rest[k:]) or None
     if name == 'parallel':
-        words = rest[scan_known(name, rest, 1):]
-        cut = next((m for m, w in enumerate(words) if w in _PARALLEL_SEPS), len(words))
-        if not words[:cut]:
-            raise ParseError("parallel runs commands read from its input; run it as a script file")
-        return ' '.join(words[:cut])
+        return _parallel_text(rest[scan_known(name, rest, 1):])
+    return _exec_c_payload(rest)
+
+
+_PARALLEL_ERR = "parallel builds the command from its inputs; run it as a script file"
+
+
+def _parallel_text(words):
+    """parallel adds each input to the command (or runs it as the command). Inputs
+    written after ::: are inspected with the command; inputs from stdin or a :::: file
+    cannot be, so only a read-only command may take them. A shell or eval running the
+    inputs fails closed either way."""
+    from core.argv import XARGS_READ_ONLY  # not at module level: cycle, see _runner_text
+    cut = next((m for m, w in enumerate(words) if w in _PARALLEL_SEPS), len(words))
+    cmd = words[:cut]
+    base = os.path.basename(cmd[0]) if cmd else ''
+    if not cmd or base in SHELLS or base in ('eval', 'source', '.'):
+        raise ParseError(_PARALLEL_ERR)
+    unseen = cut == len(words) or any(w.startswith('::::') for w in words[cut:])
+    if unseen and base not in XARGS_READ_ONLY:
+        raise ParseError(_PARALLEL_ERR)
+    inputs = [w for w in words[cut:] if w not in _PARALLEL_SEPS]
+    return ' '.join(cmd + inputs)
+
+
+def _exec_c_payload(rest):
+    """Shell text `npx -c` / `bunx` / `<manager> exec|dlx|x -c|--call|--shell-mode` runs."""
+    from core.argv import MANAGERS, skip_manager_opts  # not at module level: cycle
+    name = os.path.basename(rest[0]) if rest else ''
+    if name in ('npx', 'bunx'):
+        opts = rest[1:]
+    elif name in MANAGERS:
+        sub = skip_manager_opts(rest[1:], name)
+        if sub[:1] not in (['exec'], ['dlx'], ['x']):
+            return None
+        opts = sub[1:]
+    else:
+        return None
+    i = 0
+    while i < len(opts) and opts[i].startswith('-'):
+        w = opts[i]
+        if w.startswith('--call='):
+            return w.partition('=')[2]
+        if w in ('-c', '--call', '--shell-mode'):
+            return opts[i + 1] if i + 1 < len(opts) else ''
+        i += 2 if w in ('-p', '--package') else 1
     return None
 
 

@@ -34,7 +34,7 @@ _DOCKER_GLOBAL_VALUE = ('-H', '--host', '--context', '-c', '--config', '-l', '--
 _COMPOSE_VALUE = ('-f', '--file', '-p', '--project-name', '--env-file', '--profile', '--project-directory')
 _TAIL_VALUE = ('-n', '-c', '-s', '--lines', '--bytes', '--sleep-interval', '--pid', '--max-unchanged-stats')
 _DELETE_MSG = "deleting a remote branch is blocked; ask before deleting remote refs"
-_EXPANSION_MSG = "git push argument built from an expansion; write the refspec literally"
+_EXPANSION_MSG = "git push argument built from an expansion or brace list; write the refspec literally"
 _FIND_EXEC = ('-exec', '-execdir', '-ok', '-okdir')
 
 
@@ -286,7 +286,9 @@ def rule_force_push(simples, config, cwd="."):
                                    "force push is blocked; use git push --force-with-lease", config)
                 if a == '--delete' or _SHORT_D.match(a) or (a.startswith(':') and len(a) > 1):
                     return _result("block", "force_push", _DELETE_MSG, config)
-                if a.startswith((SUBST_PH, '$')):  # could expand to -f or +ref
+                # an unquoted expansion anywhere in the word can split into -f, and a
+                # brace list can expand to one; quotes are gone here, so both fail closed
+                if SUBST_PH in a or '$' in a or ('{' in a and '}' in a):
                     return _unparsable(config, _EXPANSION_MSG)
     return None
 

@@ -4,7 +4,7 @@ Legend: items marked (planned) are not shipped yet; everything else ships in thi
 
 ```
                  hardrail repo (public)
-                 ├── core/      decide() ← a table test of 402 rows · mapping, render, metrics (planned)
+                 ├── core/      decide() ← a table test of 423 rows · mapping, render, metrics (planned)
                  ├── adapters/  claude/ · none/, codex/ (planned)      ≤30-line shims
                  ├── templates/ rules · skills · agents · workflows      (planned)
                  └── bin/hardrail  init | check | upgrade | render | ci | metrics   (planned)

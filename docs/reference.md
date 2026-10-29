@@ -32,7 +32,8 @@ file in this repository; the file is named in each section.
    `bash`/`sh`/`zsh`/`dash` (directly or through a pipe), `source` / `.` of stdin (`-`,
    `/dev/stdin`, a here-string), `builtin eval` / `command eval`, `$(…)`, backticks,
    process substitution `<(…)` / `>(…)`, and the text a command runner hands to a shell:
-   `watch …`, `ssh <host> …`, `parallel … ::: …`, `flock -c …`, `script -c …`.
+   `watch …`, `ssh <host> …`, `parallel … ::: …` (the command plus its `:::` inputs),
+   `flock -c …`, `script -c …`, `npx -c …` / `<manager> exec|dlx -c|--call|--shell-mode …`.
 4. **rules** (`core/guard.py`), in a fixed order; the first hit wins.
 5. **package resolution** (`core/packages.py`) for the test-scoping rule, see
    [Monorepo resolution](#monorepo-resolution).
@@ -75,7 +76,7 @@ argument) stops there with `unparsable`. So `ls | xargs git push -f` reports `fo
 | Rule | What it catches | Blocks, for example | The message tells the agent to |
 |---|---|---|---|
 | `unparsable` | a command the tokenizer cannot split safely; an oversized shell payload; `xargs` fed by a pipe that runs a command which is not read-only | `pnpm test "oops`, `ls \| xargs rm` | split it or quote it plainly / write the command literally / run it as a script file / list the files explicitly; the message names the construct |
-| `force_push` | `git push` with `--force`, `-f` or `-d` in a short-flag cluster, `--mirror`, `--delete`, a `+refspec` or a `:branch` refspec; `git` found by basename, git globals (`-C`, `-c`, `--git-dir`, …) skipped; also the command `npx`, `bunx`, `<manager> exec\|dlx\|x` or `find -exec\|-execdir\|-ok\|-okdir` runs. A `git push` argument that starts with `$(…)` or a `$` expansion → `unparsable`, since it could expand to `-f` or `+ref` (write the refspec literally); `HEAD:$BR` is allowed | `/usr/bin/git push --force origin main` | use `git push --force-with-lease` / ask before deleting remote refs |
+| `force_push` | `git push` with `--force`, `-f` or `-d` in a short-flag cluster, `--mirror`, `--delete`, a `+refspec` or a `:branch` refspec; `git` found by basename, git globals (`-C`, `-c`, `--git-dir`, …) skipped; also the command `npx`, `bunx`, `<manager> exec\|dlx\|x` or `find -exec\|-execdir\|-ok\|-okdir` runs. A `git push` argument with `$`, `$(…)`, a backtick or a `{a,b}` brace list anywhere in it → `unparsable`, since an unquoted expansion can split into `-f` or expand to `+ref` (write the refspec literally; quotes are not tracked, so `HEAD:"$BR"` is blocked too) | `/usr/bin/git push --force origin main` | use `git push --force-with-lease` / ask before deleting remote refs |
 | `chained_gated` | two or more commands in one call where any of them starts with a `guard.gatedActions` prefix; a gated action inside a payload counts when the whole command has more than one command | `git commit -m x && git push` | run `` `git commit -m x` `` as its own call |
 | `watch_mode` | bare `vitest` without `--run`; `jest --watch`/`--watchAll`; an explicit `--watch` on a test script; `test:watch`; `docker compose logs -f`; `docker logs -f`; `tail -f`; `playwright`/`test:e2e` with `--ui`, `--watch` or `--debug` | `docker compose logs -f api` | `use docker compose logs --tail=200 api` (each case gets its own one-shot form) |
 | `unscoped_test` | a test runner invocation whose own arguments carry no path, or one that spans every workspace package | `pnpm test` | `pnpm exec vitest --run <path/to/file.test.ts>` |
@@ -95,8 +96,9 @@ Fixed edge cases (each blocks unless noted):
 - A shell reading a process substitution (`bash <(…)`, `bash < <(…)`, `source <(…)`,
   `. <(…)`) → `unparsable`.
 - `watch`, `ssh`, `parallel`, `flock`, `script`, `caffeinate` and `unbuffer` with an
-  option the guard does not model → `unparsable`; `parallel` with no command before `:::`
-  (commands read from its input) → `unparsable`.
+  option the guard does not model → `unparsable`. `parallel` → `unparsable` when it has no
+  command before `:::`, when the command is a shell, `eval` or `source`, or when its inputs
+  come from stdin or a `::::` file and the command is not read-only (the `xargs` list).
 - A gated action inside a payload counts as chained whenever the whole command has more
   than one command; `bash -c "git commit -m x"` alone blocks, and the message says to run
   the inner command directly.
