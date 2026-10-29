@@ -273,7 +273,8 @@ def _heredoc_at(text, i):
     """Parse the heredoc word after `<<` / `<<-` at text[i].
 
     Returns (delimiter, quoted, end) with quotes and backslashes removed, or None for an
-    empty word. A `$` or backtick in the word raises ParseError.
+    empty word. A `$` or backtick in the word, a backslash inside `"..."`, or a
+    backslash-newline raises ParseError (fail closed).
     """
     n = len(text)
     j = i + 2
@@ -299,12 +300,15 @@ def _heredoc_at(text, i):
             part = text[j + 1:k]
             if '$' in part or '`' in part:
                 raise ParseError("heredoc delimiter with $ or ` is not supported")
-            word.append(part.replace('\\', '') if c == '"' else part)
+            if c == '"' and '\\' in part:
+                raise ParseError("backslash in a double-quoted heredoc delimiter is not supported")
+            word.append(part)
             quoted = True
             j = k + 1
         elif c == '\\':
-            if j + 1 < n and text[j + 1] != '\n':
-                word.append(text[j + 1])
+            if j + 1 >= n or text[j + 1] == '\n':
+                raise ParseError("line continuation in a heredoc delimiter is not supported")
+            word.append(text[j + 1])
             quoted = True
             j += 2
         else:

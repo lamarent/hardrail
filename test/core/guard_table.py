@@ -162,4 +162,11 @@ ROWS = [
     ("git push $'-f'", "block", "unparsable"),
     ("bash -c $'git push -f'", "block", "unparsable"),
     ("echo `echo \\`git push -f\\``", "block", "force_push"),
+    ("echo $((1<<2)); git push -f", "block", "force_push"),
+    ("echo $((1<<2))", "allow", ""),
+    ("echo `echo \\$(git push -f)`", "block", "force_push"),
+    ('echo $"x"', "block", "unparsable"),
+    ("cat <<-EOF\n\t$(git push -f)\n\tEOF", "block", "force_push"),
+    ('cat <<"E\\F"\nhi\nE\\F\ngit push -f\nEF', "block", "unparsable"),
+    ("cat <<E\\\nOF\n$(git push -f)\nEOF", "block", "unparsable"),
 ]
