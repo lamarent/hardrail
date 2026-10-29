@@ -1,0 +1,160 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "hardrail config",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "defaults": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "packages": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "root": {
+            "type": "string"
+          },
+          "testFor": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "guard": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "enum": [
+            "block",
+            "warn"
+          ]
+        },
+        "gatedActions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "heavy": {
+      "type": "array",
+      "description": "glob: `*` and `?` only",
+      "items": {
+        "type": "string"
+      }
+    },
+    "worktree": {
+      "type": "object",
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "dir": {
+          "type": "string"
+        },
+        "include": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ci": {
+      "type": "object",
+      "properties": {
+        "alwaysFull": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "skip": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "base": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "codegen": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "verify": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "conventionChecks": {
+      "type": "array"
+    },
+    "modules": {
+      "type": "object",
+      "properties": {
+        "cleanup": {
+          "type": "boolean"
+        },
+        "board": {
+          "type": "boolean"
+        },
+        "standup": {
+          "type": "boolean"
+        },
+        "sessionResume": {
+          "type": "boolean"
+        },
+        "codeReview": {
+          "type": "boolean"
+        },
+        "archTest": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "language": {
+      "type": "object",
+      "properties": {
+        "reply": {
+          "type": "string"
+        },
+        "published": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

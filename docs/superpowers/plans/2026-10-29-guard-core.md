@@ -208,7 +208,7 @@ class SplitTests(unittest.TestCase):
 - Create: `test/test_no_leak.py`
 - Test: itself
 
-- [ ] **Step 1: Write the test** — walks every tracked file (`git ls-files`), fails on regex `[A-Z]{2,6}[0-9]*-[0-9]{2,}` (ticket ids), `/Users/`, `/home/`, `[\w.]+@[\w.]+\.\w+`, and any line matching `_DENY` read from env `HARDRAIL_DENYLIST` (a local file path, absent in CI).
+- [ ] **Step 1: Write the test** — walks every tracked file (`git ls-files`), fails on regex `[A-Z]{2,6}[0-9]*-[0-9]{2,}` (ticket ids), personal home-directory paths (macOS and Linux style), `[\w.]+@[\w.]+\.\w+`, and any line matching `_DENY` read from env `HARDRAIL_DENYLIST` (a local file path, absent in CI).
 - [ ] **Step 2: Run** — `python3 -m unittest test.test_no_leak` → OK. If it fails, fix the file, never the regex.
 - [ ] **Step 3: Commit** — `test: name-leak gate over tracked files`.
 
