@@ -113,8 +113,15 @@ def manager_flags(argv):
     if not argv or os.path.basename(argv[0]) not in MANAGERS:
         return []
     values = _value_flags(os.path.basename(argv[0]))
+    out, i = _flags_from(argv, 1, values)
+    if argv[i:i + 1] in (['run'], ['run-script']):  # `pnpm run -r test`: same flags after run
+        out += _flags_from(argv, i + 1, values)[0]
+    return out
+
+
+def _flags_from(argv, i, values):
+    """(flag, value) pairs from argv[i] up to the first non-option word, and that index."""
     out = []
-    i = 1
     while i < len(argv) and argv[i].startswith('-') and argv[i] != '-':
         t = argv[i]
         nxt = argv[i + 1] if i + 1 < len(argv) else ""
@@ -139,4 +146,4 @@ def manager_flags(argv):
                     break
                 out.append(('-' + letter, None))
         i += 1
-    return out
+    return out, i

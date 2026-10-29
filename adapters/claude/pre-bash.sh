@@ -22,7 +22,7 @@ cmd=${input#*\"command\":}
 case "$cmd" in
   # Quotes, backslashes and expansions can split a keyword (pu''sh, $cmd); in the JSON
   # text a quote inside the command shows as \". A shell name may read piped text.
-  *[\'\\\$\`]*|*'<('*|*sh*) ;;
+  *[\'\\\$\`]*|*'<('*|*sh*|*xargs*|*parallel*) ;;
   *test*|*vitest*|*jest*|*push*|*commit*|*reset*|*rebase*|*merge*|*stash*|*clean*|*gh*|*rm*|*docker*|*podman*|*turbo*|*tail*|*prisma*|*generate*|*install*|*build*|*playwright*|*logs*|*yarn*|*bun*|*npx*|*npm*) ;;
   *) exit 0 ;;
 esac

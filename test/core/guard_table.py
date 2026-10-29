@@ -411,6 +411,10 @@ ROWS = [
     ("git push $(echo -f)", "block", "unparsable"),
     ("git push ${F:--f}", "block", "unparsable"),
     ('git push origin "$B"', "block", "unparsable"),
+    ("git push origin HEAD:$BR", "allow", ""),
+    ("git push origin main:$B", "allow", ""),
+    ('git push -u origin "$(git branch --show-current)"', "block", "unparsable"),
+    ('git push "$R" main', "block", "unparsable"),
     ('git push origin "$(git branch --show-current)"', "block", "unparsable"),
     ("git push origin HEAD", "allow", ""),
     # final wave: git -c aliases and push config are not interpreted (known gap)
@@ -431,4 +435,10 @@ ROWS = [
     ("git ls-files | xargs -n1 basename", "allow", ""),
     ("git ls-files | xargs dirname", "allow", ""),
     ("ls | xargs git push -f", "block", "force_push"),
+    # round 2: recursive / filter flags after run feed package resolution
+    ("pnpm run -r test -- src/a.test.ts", "block", "unscoped_test", FX),
+    ("pnpm run --recursive test src/a.test.ts", "block", "unscoped_test", FX),
+    ("pnpm run --filter @fx/api test src/a.test.ts", "allow", "", FX),
+    ("nx affected -t test", "block", "unscoped_test"),
+    ("nx affected -t lint", "allow", ""),
 ]

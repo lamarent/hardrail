@@ -161,7 +161,8 @@ from `docs/overview.md`:
 Only box 2 exists today. One Bash call goes through:
 
 1. **bash pre-filter** — a keyword `case` on the command text; no gated keyword, no quote,
-   backslash, `$`, backtick, `<(` or shell name → exit 0 without starting python.
+   backslash, `$`, backtick, `<(`, shell name, `xargs` or `parallel` → exit 0 without
+   starting python.
 2. **python shim** (30 lines or fewer) — reads the JSON, finds the nearest
    `hardrail.config.json`, calls `decide`, maps the verdict to an exit code.
 3. **tokenizer** — splits on `;`, `&&`, `||`, `|`, `&`, newlines; quote- and

@@ -90,7 +90,7 @@ class ParseError(Exception):
 _MAX_BODY_LINES = 200
 _MAX_BODY_BYTES = 8192
 _TOO_LARGE = "payload too large to inspect; run it as a script file"
-_SUBST_PH = '_subst_'
+SUBST_PH = '_subst_'
 _MAX_SUBST_DEPTH = 20
 _TOO_DEEP = "payload too deep or too large to inspect; run it as a script file"
 _CASE = re.compile(r'\bcase\s')
@@ -331,8 +331,8 @@ def _clean(argv):
     A shell whose argv carries a substitution word (`bash <(...)`, `bash < <(...)`,
     `sh -c "$(...)"`) runs text that cannot be inspected: ParseError.
     """
-    if _SUBST_PH in argv:
-        k = argv.index(_SUBST_PH)
+    if SUBST_PH in argv:
+        k = argv.index(SUBST_PH)
         b = _builtin_index(argv)
         if any(os.path.basename(w) in SHELLS for w in argv[:k]) or \
                 (b is not None and b < k and argv[b] in _SOURCE):
@@ -478,7 +478,7 @@ def wrapper_c_payload(name, rest):
 def _runner_text(argv):
     """Text a command-running tool hands to a shell: `watch`, `ssh host`, `parallel`, and
     `flock` / `script` with -c. Only the command word (after env and wrappers) counts."""
-    from core.argv import strip_env_and_wrappers  # argv imports this module
+    from core.argv import strip_env_and_wrappers  # not at module level: core.argv imports core.shell (cycle)
     try:
         rest = strip_env_and_wrappers(argv)[1]
     except ParseError:
@@ -608,7 +608,7 @@ def _pipe_payload(argv):
     """Text that `echo` / `printf` with literal arguments writes into a shell, else
     ParseError: the shell would run output that cannot be inspected."""
     words = _drop_redirects(argv)
-    if not words or words[0] not in ('echo', 'printf') or _SUBST_PH in argv:
+    if not words or words[0] not in ('echo', 'printf') or SUBST_PH in argv:
         raise ParseError(_PIPE_ERR)
     cmd, words = words[0], words[1:]
     if cmd == 'echo':
@@ -846,7 +846,7 @@ def _extract_substs(cmd):
     last = 0
     for start, b0, b1, end, opener in found:
         out.append(cmd[last:start])
-        out.append(_SUBST_PH)
+        out.append(SUBST_PH)
         body = cmd[b0:b1]
         if opener == '`':
             body = _BQ_ESC.sub(r'\1', body)

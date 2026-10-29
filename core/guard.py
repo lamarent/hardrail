@@ -7,7 +7,7 @@ import shlex
 from core.argv import XARGS_ERR, skip_manager_opts, strip_env_and_wrappers, xargs_writes_command
 from core.config import find_root
 from core.packages import Package, find_workspace_root, resolve_package
-from core.shell import _SUBST_PH, ParseError, is_pipe, scan_opts, split_commands
+from core.shell import SUBST_PH, ParseError, is_pipe, scan_opts, split_commands
 
 _PATH_ARG = re.compile(r'\.(test|spec)\.(ts|tsx|js|jsx)$')
 _SHORT_F = re.compile(r'^-[A-Za-z]*f[A-Za-z]*$')
@@ -158,7 +158,7 @@ def _runner(argv, config):
             return 'test', rest[1:]
     if base == 'nx' and argv[1:2] == ['test']:
         return 'test', argv[2:]
-    if base == 'nx' and argv[1:2] == ['run-many']:
+    if base == 'nx' and argv[1:2] in (['run-many'], ['affected']):
         hit = _nx_target(argv[2:])
         if hit:
             return hit
@@ -286,7 +286,7 @@ def rule_force_push(simples, config, cwd="."):
                                    "force push is blocked; use git push --force-with-lease", config)
                 if a == '--delete' or _SHORT_D.match(a) or (a.startswith(':') and len(a) > 1):
                     return _result("block", "force_push", _DELETE_MSG, config)
-                if _SUBST_PH in a or '$' in a:
+                if a.startswith((SUBST_PH, '$')):  # could expand to -f or +ref
                     return _unparsable(config, _EXPANSION_MSG)
     return None
 
