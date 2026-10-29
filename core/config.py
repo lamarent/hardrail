@@ -2,6 +2,7 @@
 import copy
 import json
 import os
+import shlex
 
 CONFIG_NAME = "hardrail.config.json"
 
@@ -61,6 +62,7 @@ def load(repo_root):
     out = _merge(DEFAULTS, data)
     errors = []
     _check_types(DEFAULTS, out, "", errors)
+    _check_test_commands(out, errors)
     if errors:
         out["_load_error"] = "; ".join(errors)[:200]
     unknown = [k for k in data if k not in DEFAULTS and k not in _SCHEMA_ONLY_KEYS]
@@ -84,6 +86,28 @@ def _check_types(defaults, cfg, prefix, errors):
             errors.append("%s%s must be %s" % (prefix, key, type(default).__name__))
         elif isinstance(default, dict):
             _check_types(default, value, prefix + key + ".", errors)
+
+
+def _check_test_commands(cfg, errors):
+    """A test command that cannot be tokenized would make every command unparsable:
+    `defaults.test` reverts to the default and a package drops its `test`."""
+    entries = [("defaults.test", cfg["defaults"], DEFAULTS["defaults"]["test"])]
+    packages = cfg.get("packages")
+    if isinstance(packages, dict):
+        entries += [("packages.%s.test" % name, pkg, None) for name, pkg in packages.items()
+                    if isinstance(pkg, dict)]
+    for key, holder, default in entries:
+        cmd = holder.get("test")
+        if not isinstance(cmd, str):
+            continue
+        try:
+            shlex.split(cmd)
+        except ValueError as e:
+            errors.append("%s cannot be parsed (%s)" % (key, e))
+            if default is None:
+                del holder["test"]
+            else:
+                holder["test"] = default
 
 
 def find_root(cwd):

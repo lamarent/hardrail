@@ -84,6 +84,14 @@ class ConfigTest(unittest.TestCase):
         cfg = config.load(self._write('{"guard": {"gatedActions": ["git push", 1]}}'))
         self.assertEqual(cfg["guard"]["gatedActions"], config.DEFAULTS["guard"]["gatedActions"])
 
+    def test_untokenizable_test_command_reverts(self):
+        cfg = config.load(self._write(
+            '{"defaults": {"test": "pnpm exec \'vitest"}, "packages": {"web": {"test": "x \\"y"}}}'))
+        self.assertEqual(cfg["defaults"]["test"], config.DEFAULTS["defaults"]["test"])
+        self.assertNotIn("test", cfg["packages"]["web"])
+        self.assertEqual(cfg["_load_error"], "defaults.test cannot be parsed (No closing quotation); "
+                                             "packages.web.test cannot be parsed (No closing quotation)")
+
     def test_find_root_walks_up(self):
         root = fixture_root("minimal.json")
         deep = os.path.join(root, "a", "b")

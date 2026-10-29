@@ -7,7 +7,7 @@ import shlex
 from core.argv import XARGS_ERR, skip_manager_opts, strip_env_and_wrappers, xargs_writes_command
 from core.config import find_root
 from core.packages import Package, find_workspace_root, resolve_package
-from core.shell import ParseError, is_pipe, scan_opts, split_commands
+from core.shell import _SUBST_PH, ParseError, is_pipe, scan_opts, split_commands
 
 _PATH_ARG = re.compile(r'\.(test|spec)\.(ts|tsx|js|jsx)$')
 _SHORT_F = re.compile(r'^-[A-Za-z]*f[A-Za-z]*$')
@@ -34,6 +34,8 @@ _DOCKER_GLOBAL_VALUE = ('-H', '--host', '--context', '-c', '--config', '-l', '--
 _COMPOSE_VALUE = ('-f', '--file', '-p', '--project-name', '--env-file', '--profile', '--project-directory')
 _TAIL_VALUE = ('-n', '-c', '-s', '--lines', '--bytes', '--sleep-interval', '--pid', '--max-unchanged-stats')
 _DELETE_MSG = "deleting a remote branch is blocked; ask before deleting remote refs"
+_EXPANSION_MSG = "git push argument built from an expansion; write the refspec literally"
+_FIND_EXEC = ('-exec', '-execdir', '-ok', '-okdir')
 
 
 def _is_scope(word):
@@ -147,16 +149,34 @@ def _runner(argv, config):
         if base == 'npm' and rest[0] in ('t', 'tst'):
             rest = ['test'] + rest[1:]
         if rest[0] in ('run', 'run-script') and len(rest) > 1:
-            rest = rest[1:]
+            rest = skip_manager_opts(rest[1:], base) or ['']
         if _is_script(rest[0]):
             return rest[0], rest[1:]
-    if base == 'turbo' and argv[1:3] == ['run', 'test']:
-        return 'test', argv[3:]
+    if base == 'turbo':
+        rest = argv[2:] if argv[1:2] == ['run'] else argv[1:]
+        if rest[:1] == ['test']:
+            return 'test', rest[1:]
     if base == 'nx' and argv[1:2] == ['test']:
         return 'test', argv[2:]
+    if base == 'nx' and argv[1:2] == ['run-many']:
+        hit = _nx_target(argv[2:])
+        if hit:
+            return hit
     for cmd in _configured_tests(config):
         if argv[:len(cmd)] == cmd:
             return 'configured', argv[len(cmd):]
+    return None
+
+
+def _nx_target(args):
+    """('test', other args) when `nx run-many -t|--target[=] <tasks>` includes test."""
+    for k, a in enumerate(args):
+        name, eq, val = a.partition('=')
+        if name in ('-t', '--target', '--targets'):
+            if not eq:
+                val = args[k + 1] if k + 1 < len(args) else ''
+            if 'test' in val.split(','):
+                return 'test', args[:k] + args[k + (1 if eq else 2):]
     return None
 
 
@@ -220,17 +240,54 @@ def _unparsable(config, why=None):
     return _result("block", "unparsable", why or "cannot parse command; split it or quote it plainly", config)
 
 
+def _find_exec_cmds(c):
+    """The commands `find ... -exec|-execdir|-ok|-okdir <cmd> ... ;|+` runs."""
+    if c[:1] != ['find']:
+        return []
+    out = []
+    for k, w in enumerate(c):
+        if w in _FIND_EXEC:
+            end = next((m for m in range(k + 1, len(c)) if c[m] in (';', '+')), len(c))
+            out.append(c[k + 1:end])
+    return out
+
+
+def _push_forms(s):
+    """Every form of a simple that may run git: as written, with a package manager's
+    exec / dlx / npx dropped, and each `find -exec` command; wrappers stripped from each."""
+    c = _cmd(s)
+    yield c
+    for f in [_exec_form(c)] + _find_exec_cmds(c):
+        f = _strip_git(strip_env_and_wrappers(f)[1]) if f else None
+        if f:
+            yield [os.path.basename(f[0])] + f[1:]
+
+
+def _exec_form(c):
+    """The command `npx` / `bunx` / `<manager> exec|dlx|x` runs, else None."""
+    base = c[0] if c else ''
+    if base in ('npx', 'bunx'):
+        return skip_manager_opts(c[1:], base)
+    if base in _PKG_MANAGERS:
+        rest = skip_manager_opts(c[1:], base)
+        if rest[:1] in (['exec'], ['dlx'], ['x']):
+            return skip_manager_opts(rest[1:], base)
+    return None
+
+
 def rule_force_push(simples, config, cwd="."):
     for s in simples:
-        c = _cmd(s)
-        if c[:2] != ['git', 'push']:
-            continue
-        for a in c[2:]:
-            if a in ('--force', '--mirror') or _SHORT_F.match(a) or (a.startswith('+') and len(a) > 1):
-                return _result("block", "force_push",
-                               "force push is blocked; use git push --force-with-lease", config)
-            if a == '--delete' or _SHORT_D.match(a) or (a.startswith(':') and len(a) > 1):
-                return _result("block", "force_push", _DELETE_MSG, config)
+        for c in _push_forms(s):
+            if c[:2] != ['git', 'push']:
+                continue
+            for a in c[2:]:
+                if a in ('--force', '--mirror') or _SHORT_F.match(a) or (a.startswith('+') and len(a) > 1):
+                    return _result("block", "force_push",
+                                   "force push is blocked; use git push --force-with-lease", config)
+                if a == '--delete' or _SHORT_D.match(a) or (a.startswith(':') and len(a) > 1):
+                    return _result("block", "force_push", _DELETE_MSG, config)
+                if _SUBST_PH in a or '$' in a:
+                    return _unparsable(config, _EXPANSION_MSG)
     return None
 
 

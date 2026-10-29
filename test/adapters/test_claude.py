@@ -205,6 +205,14 @@ class ClaudeHookTest(unittest.TestCase):
         r = run_hook("git pu''sh -f", path=self._no_python_path())
         self.assertIn("guard disabled", r.stderr)
 
+    def test_untokenizable_test_command_falls_back(self):
+        d = self._config_dir('{"defaults": {"test": "pnpm exec \'vitest"}}')
+        raw = json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": d})
+        r = run_hook(raw=raw, extra_env={"CLAUDE_PROJECT_DIR": d})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stderr, "hardrail: config ignored (defaults.test cannot be parsed "
+                                   "(No closing quotation)), using defaults\n")
+
     def test_snippet_has_timeout(self):
         with open(os.path.join(ROOT, "adapters", "claude", "hooks.snippet.json"), encoding="utf-8") as f:
             self.assertEqual(json.load(f)["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"], 10)
