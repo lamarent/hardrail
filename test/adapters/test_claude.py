@@ -41,7 +41,7 @@ class ClaudeHookTest(unittest.TestCase):
         self.assertEqual((r.returncode, r.stdout), (0, ""))
 
     def test_fast_path_skips_python(self):
-        r = run_hook("ls -la", path=self._no_python_path(), hook_cwd="/")  # fixture path contains "test"
+        r = run_hook("ls -la", path=self._no_python_path())
         self.assertEqual((r.returncode, r.stderr, r.stdout), (0, "", ""))
 
     def test_missing_python_fails_open(self):
@@ -57,7 +57,7 @@ class ClaudeHookTest(unittest.TestCase):
         self.assertEqual(r.stdout, "")
 
     def test_bad_json_fails_open(self):
-        r = run_hook(raw="{ test")  # keyword so the pre-filter lets it through
+        r = run_hook(raw="{")  # no command key: pre-filter falls through to python
         self.assertEqual(r.returncode, 0)
         self.assertIn("guard error", r.stderr)
         self.assertEqual(r.stdout, "")

@@ -1,12 +1,9 @@
 """Workspace package resolution: which package does a test command target?"""
-from __future__ import annotations
 
 import glob
 import json
 import os
 import re
-from dataclasses import dataclass
-from typing import List, Optional, Tuple, Union
 
 from core.shell import Simple
 
@@ -21,18 +18,29 @@ _FILTER_FLAGS = ('--filter', '-F', '--filter-prod')
 _SELECTOR = ('*', '...', '[')
 
 
-@dataclass
 class Package:
-    name: str
-    root: str
-    test_script: Optional[str]
+    __slots__ = ("name", "root", "test_script")
+
+    def __init__(self, name, root, test_script):
+        self.name = name
+        self.root = root
+        self.test_script = test_script
+
+    def __eq__(self, other):
+        return isinstance(other, Package) and (self.name, self.root, self.test_script) == \
+            (other.name, other.root, other.test_script)
+
+    __hash__ = None
+
+    def __repr__(self):
+        return "Package(name=%r, root=%r, test_script=%r)" % (self.name, self.root, self.test_script)
 
 
-def _expand(path: str) -> str:
+def _expand(path):
     return os.path.expandvars(os.path.expanduser(path))
 
 
-def _read_json(path: str) -> Optional[dict]:
+def _read_json(path):
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
@@ -41,7 +49,7 @@ def _read_json(path: str) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
-def _package_at(root: str) -> Optional[Package]:
+def _package_at(root):
     data = _read_json(os.path.join(root, "package.json"))
     if data is None:
         return None
@@ -52,12 +60,12 @@ def _package_at(root: str) -> Optional[Package]:
                    root, script if isinstance(script, str) else None)
 
 
-def _within(path: str, root: str) -> bool:
+def _within(path, root):
     path, root = os.path.abspath(path), os.path.abspath(root)
     return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
 
-def _ancestor_package(start: str, stop: Optional[str] = None) -> Optional[Package]:
+def _ancestor_package(start, stop=None):
     """Nearest ancestor (inclusive) with a package.json; never climbs above `stop`."""
     cur = os.path.abspath(start)
     while True:
@@ -70,8 +78,8 @@ def _ancestor_package(start: str, stop: Optional[str] = None) -> Optional[Packag
         cur = parent
 
 
-def _workspace_globs(repo_root: str) -> List[str]:
-    globs: List[str] = []
+def _workspace_globs(repo_root):
+    globs = []
     try:
         with open(os.path.join(repo_root, "pnpm-workspace.yaml"), encoding="utf-8") as f:
             lines = f.read().splitlines()
@@ -94,7 +102,7 @@ def _workspace_globs(repo_root: str) -> List[str]:
     return globs
 
 
-def _by_name(name: str, repo_root: str) -> Optional[Package]:
+def _by_name(name, repo_root):
     for pattern in _workspace_globs(repo_root):
         for d in sorted(glob.glob(os.path.join(repo_root, pattern))):
             pkg = _package_at(d) if os.path.isdir(d) else None
@@ -103,7 +111,7 @@ def _by_name(name: str, repo_root: str) -> Optional[Package]:
     return None
 
 
-def _parse_flags(argv: List[str]) -> List[Tuple[str, Optional[str]]]:
+def _parse_flags(argv):
     """(flag, value) pairs between the package manager and its subcommand.
 
     Handles `--flag value`, `--flag=value`, `-C=value`, and short clusters (`-rF value`).
@@ -113,7 +121,7 @@ def _parse_flags(argv: List[str]) -> List[Tuple[str, Optional[str]]]:
         i += 1
     if i >= len(argv) or os.path.basename(argv[i]) not in _MANAGERS:
         return []
-    out: List[Tuple[str, Optional[str]]] = []
+    out = []
     i += 1
     while i < len(argv) and argv[i].startswith('-') and argv[i] != '-':
         t = argv[i]
@@ -139,7 +147,7 @@ def _parse_flags(argv: List[str]) -> List[Tuple[str, Optional[str]]]:
     return out
 
 
-def _filter_package(flt: str, repo_root: str) -> Union[Package, str]:
+def _filter_package(flt, repo_root):
     if any(x in flt for x in _SELECTOR) or '!' in flt or '{' in flt or '^' in flt:
         return "all"
     if flt.startswith(('./', '../', '/')) or ('/' in flt and '@' not in flt):
@@ -150,8 +158,8 @@ def _filter_package(flt: str, repo_root: str) -> Union[Package, str]:
     return pkg or "all"
 
 
-def resolve_package(simple: Simple, cwd: str, config: dict, repo_root: str,
-                    prev: Optional[Simple] = None) -> Union[Package, None, str]:
+def resolve_package(simple, cwd, config, repo_root,
+                    prev=None):
     """Package a test command targets; "all" when it spans the workspace or cannot be resolved.
 
     Fails closed: a lookup miss (unknown filter, directory without package.json, path outside
@@ -159,8 +167,8 @@ def resolve_package(simple: Simple, cwd: str, config: dict, repo_root: str,
     """
     base = os.path.abspath(cwd)
     inside = _within(base, repo_root)
-    target: Optional[str] = None
-    filters: List[str] = []
+    target = None
+    filters = []
     for flag, value in _parse_flags(simple.argv):
         if flag in _ALL_FLAGS:
             return "all"

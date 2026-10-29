@@ -1,12 +1,8 @@
 """Guard decision: allow, warn or block a shell command before an agent runs it."""
-from __future__ import annotations
 
-import fnmatch
 import os
 import re
 import shlex
-from dataclasses import dataclass
-from typing import Callable, List, Optional, Tuple
 
 from core.config import find_root
 from core.packages import Package, resolve_package
@@ -24,18 +20,36 @@ _E2E_WATCH = ('--ui', '--watch', '--debug')
 _PLACEHOLDER = '<path/to/file.test.ts>'
 
 
-@dataclass
 class Decision:
-    action: str   # "allow" | "warn" | "block"
-    rule: str     # force_push | chained_gated | watch_mode | unscoped_test | heavy | unparsable | ""
-    message: str  # one line, ends with the corrected command when one exists
+    # action: "allow" | "warn" | "block"
+    # rule: force_push | chained_gated | watch_mode | unscoped_test | heavy | unparsable | ""
+    # message: one line, ends with the corrected command when one exists
+    __slots__ = ("action", "rule", "message")
+
+    def __init__(self, action, rule, message):
+        self.action = action
+        self.rule = rule
+        self.message = message
+
+    def __eq__(self, other):
+        return isinstance(other, Decision) and (self.action, self.rule, self.message) == \
+            (other.action, other.rule, other.message)
+
+    __hash__ = None
+
+    def __repr__(self):
+        return "Decision(action=%r, rule=%r, message=%r)" % (self.action, self.rule, self.message)
 
 
 ALLOW = Decision("allow", "", "")
-Rule = Callable[[List[Simple], dict, str], Optional[Decision]]
 
 
-def _strip_env(argv: List[str]) -> Tuple[List[str], List[str]]:
+def _glob_match(pattern, text):
+    """Full-match glob where `*` spans anything; every other character is literal."""
+    return re.fullmatch(".*".join(re.escape(p) for p in pattern.split("*")), text, re.S) is not None
+
+
+def _strip_env(argv):
     """Split leading env assignments and wrappers (sudo, time, env...) from the command."""
     i = 0
     while i < len(argv) and (_ENV.match(argv[i]) or os.path.basename(argv[i]) in _WRAPPERS):
@@ -43,7 +57,7 @@ def _strip_env(argv: List[str]) -> Tuple[List[str], List[str]]:
     return argv[:i], argv[i:]
 
 
-def _strip_git(argv: List[str]) -> List[str]:
+def _strip_git(argv):
     """['git', '-C', 'x', 'push', ...] -> ['git', 'push', ...]."""
     if not argv or argv[0] != 'git':
         return argv
@@ -53,11 +67,11 @@ def _strip_git(argv: List[str]) -> List[str]:
     return ['git'] + argv[i:]
 
 
-def _cmd(s: Simple) -> List[str]:
+def _cmd(s):
     return _strip_git(_strip_env(s.argv)[1])
 
 
-def _skip_opts(args: List[str]) -> List[str]:
+def _skip_opts(args):
     i = 0
     while i < len(args) and args[i].startswith('-'):
         cluster = len(args[i]) > 2 and args[i][1] != '-' and args[i][-1] in 'FC' and '=' not in args[i]
@@ -65,25 +79,34 @@ def _skip_opts(args: List[str]) -> List[str]:
     return args[i:]
 
 
-def _is_script(name: str) -> bool:
+def _is_script(name):
     return (name == 'test' or name.startswith('test:')) and name != 'test:e2e'
 
 
-def _configured_tests(config: dict) -> List[List[str]]:
+_SPLIT_CACHE = {}
+
+
+def _split_cached(cmd):
+    if cmd not in _SPLIT_CACHE:
+        _SPLIT_CACHE[cmd] = shlex.split(cmd)
+    return list(_SPLIT_CACHE[cmd])
+
+
+def _configured_tests(config):
     cmds = [config.get('defaults', {}).get('test')]
     for pkg in config.get('packages', {}).values():
         if isinstance(pkg, dict):
             cmds.append(pkg.get('test'))
-    return [shlex.split(c) for c in cmds if isinstance(c, str) and c.strip()]
+    return [_split_cached(c) for c in cmds if isinstance(c, str) and c.strip()]
 
 
-def _direct(rest: List[str]) -> Optional[Tuple[str, List[str]]]:
+def _direct(rest):
     if rest and os.path.basename(rest[0]) in _RUNNERS:
         return os.path.basename(rest[0]), rest[1:]
     return None
 
 
-def _runner(argv: List[str], config: dict) -> Optional[Tuple[str, List[str]]]:
+def _runner(argv, config):
     """Detect a test runner. Returns (name, args after the runner token)."""
     if not argv:
         return None
@@ -114,28 +137,28 @@ def _runner(argv: List[str], config: dict) -> Optional[Tuple[str, List[str]]]:
     return None
 
 
-def _has_path(args: List[str]) -> bool:
+def _has_path(args):
     return any(not a.startswith('-') and ('/' in a or _PATH_ARG.search(a)) for a in args)
 
 
-def _first_path(args: List[str]) -> Optional[str]:
+def _first_path(args):
     for a in args:
         if not a.startswith('-') and ('/' in a or _PATH_ARG.search(a)):
             return a
     return None
 
 
-def _result(action: str, rule: str, msg: str, config: dict) -> Decision:
+def _result(action, rule, msg, config):
     if action == "block" and config.get("guard", {}).get("mode") == "warn":
         action = "warn"
     return Decision(action, rule, msg)
 
 
-def _unparsable(config: dict) -> Decision:
+def _unparsable(config):
     return _result("block", "unparsable", "cannot parse command; split it or quote it plainly", config)
 
 
-def rule_force_push(simples: List[Simple], config: dict, cwd: str = ".") -> Optional[Decision]:
+def rule_force_push(simples, config, cwd="."):
     for s in simples:
         c = _cmd(s)
         if c[:2] != ['git', 'push']:
@@ -147,7 +170,7 @@ def rule_force_push(simples: List[Simple], config: dict, cwd: str = ".") -> Opti
     return None
 
 
-def _is_gated(s: Simple, config: dict) -> bool:
+def _is_gated(s, config):
     c = _cmd(s)
     for prefix in config["guard"]["gatedActions"]:
         p = prefix.split()
@@ -156,7 +179,7 @@ def _is_gated(s: Simple, config: dict) -> bool:
     return False
 
 
-def rule_chained_gated(simples: List[Simple], config: dict, cwd: str = ".") -> Optional[Decision]:
+def rule_chained_gated(simples, config, cwd="."):
     chains = {}
     for s in simples:
         chains.setdefault(s.payload_of, []).append(s)
@@ -167,7 +190,7 @@ def rule_chained_gated(simples: List[Simple], config: dict, cwd: str = ".") -> O
     return None
 
 
-def _watch_mode(s: Simple, config: dict) -> bool:
+def _watch_mode(s, config):
     env, argv = _strip_env(s.argv)
     if any(e.startswith('CI=') for e in env):
         return False
@@ -185,7 +208,7 @@ def _watch_mode(s: Simple, config: dict) -> bool:
     return name.startswith('test:') and name.endswith('watch')
 
 
-def rule_watch_mode(simples: List[Simple], config: dict, cwd: str = ".") -> Optional[Decision]:
+def rule_watch_mode(simples, config, cwd="."):
     for s in simples:
         if _watch_mode(s, config):
             return _result("block", "watch_mode",
@@ -194,12 +217,12 @@ def rule_watch_mode(simples: List[Simple], config: dict, cwd: str = ".") -> Opti
     return None
 
 
-def _own_path_token(script: str) -> bool:
+def _own_path_token(script):
     return any('/' in t or _PATH_ARG.search(t) for t in script.split() if not t.startswith('-'))
 
 
-def _unscoped_decision(s: Simple, prev: Optional[Simple], name: str, args: List[str],
-                       config: dict, cwd: str) -> Optional[Decision]:
+def _unscoped_decision(s, prev, name, args,
+                       config, cwd):
     if '--help' in args:
         return None
     root = find_root(cwd) or cwd
@@ -223,7 +246,7 @@ def _unscoped_decision(s: Simple, prev: Optional[Simple], name: str, args: List[
     return _result("block", "unscoped_test", f"unscoped test run; scope it: {fix}", config)
 
 
-def rule_unscoped_test(simples: List[Simple], config: dict, cwd: str = ".") -> Optional[Decision]:
+def rule_unscoped_test(simples, config, cwd="."):
     for i, s in enumerate(simples):
         hit = _runner(_strip_env(s.argv)[1], config)
         if not hit:
@@ -235,7 +258,7 @@ def rule_unscoped_test(simples: List[Simple], config: dict, cwd: str = ".") -> O
     return None
 
 
-def _heavy_form(argv: List[str]) -> str:
+def _heavy_form(argv):
     if argv[:2] in (['npm', 'run'], ['pnpm', 'run'], ['pnpm', 'exec'], ['pnpm', 'dlx']):
         argv = argv[2:]
     elif argv[:1] in (['pnpm'], ['yarn'], ['npx']):
@@ -243,19 +266,19 @@ def _heavy_form(argv: List[str]) -> str:
     return ' '.join(argv)
 
 
-def rule_heavy(simples: List[Simple], config: dict, cwd: str = ".") -> Optional[Decision]:
+def rule_heavy(simples, config, cwd="."):
     for s in simples:
         form = _heavy_form(_cmd(s))
-        if any(fnmatch.fnmatchcase(form, g) for g in config.get("heavy", [])):
+        if any(_glob_match(g, form) for g in config.get("heavy", [])):
             return Decision("warn", "heavy", f"heavy command; dispatch it to a runner agent: {form}")
     return None
 
 
-RULES: List[Rule] = [rule_force_push, rule_chained_gated, rule_watch_mode,
+RULES = [rule_force_push, rule_chained_gated, rule_watch_mode,
                      rule_unscoped_test, rule_heavy]
 
 
-def decide(command: str, cwd: str, config: dict) -> Decision:
+def decide(command, cwd, config):
     try:
         simples = split_commands(command)
     except ParseError:

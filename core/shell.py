@@ -1,11 +1,8 @@
 """Shell tokeniser: split a command line into simple commands and expand payloads."""
-from __future__ import annotations
 
 import os
 import re
 import shlex
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
 
 _SEPS = ';&|\n'
 _SENT = {c: chr(0xE000 + i) for i, c in enumerate(_SEPS)}
@@ -15,30 +12,41 @@ _HEREDOC = re.compile(r'<<-?\s*(["\']?)([A-Za-z_]\w*)\1')
 _C_FLAG = re.compile(r'-[A-Za-z]*c[A-Za-z]*')
 
 
-@dataclass
 class Simple:
-    argv: List[str]
-    raw: str
-    payload_of: Optional[str] = None  # "sh -c" | "eval" | "heredoc"
+    __slots__ = ("argv", "raw", "payload_of")  # payload_of: None | "sh -c" | "eval" | "heredoc"
+
+    def __init__(self, argv, raw, payload_of=None):
+        self.argv = argv
+        self.raw = raw
+        self.payload_of = payload_of
+
+    def __eq__(self, other):
+        return isinstance(other, Simple) and (self.argv, self.raw, self.payload_of) == \
+            (other.argv, other.raw, other.payload_of)
+
+    __hash__ = None
+
+    def __repr__(self):
+        return "Simple(argv=%r, raw=%r, payload_of=%r)" % (self.argv, self.raw, self.payload_of)
 
 
 class ParseError(Exception):
     pass
 
 
-def _s(c: str) -> str:
+def _s(c):
     return _SENT.get(c, c)
 
 
-def _protect(cmd: str) -> Tuple[str, List[int]]:
+def _protect(cmd):
     """Replace quoted, escaped or redirect separator chars with sentinels.
 
     Returns the new text and, for each output char, its index in `cmd`.
     """
-    out: List[str] = []
-    idx: List[int] = []
+    out = []
+    idx = []
 
-    def put(ch: str, src: int) -> None:
+    def put(ch, src):
         out.append(ch)
         idx.append(src)
 
@@ -89,13 +97,13 @@ def _protect(cmd: str) -> Tuple[str, List[int]]:
     return ''.join(out), idx
 
 
-def _restore(word: str) -> str:
+def _restore(word):
     return ''.join(_UNSENT.get(c, c) for c in word)
 
 
-def _spans(p: str) -> List[Tuple[int, int, bool]]:
+def _spans(p):
     """Token spans (start, end, is_separator) of protected text, mirroring shlex."""
-    res: List[Tuple[int, int, bool]] = []
+    res = []
     i, n = 0, len(p)
     while i < n:
         c = p[i]
@@ -130,7 +138,7 @@ def _spans(p: str) -> List[Tuple[int, int, bool]]:
     return res
 
 
-def _split_plain(text: str) -> List[Simple]:
+def _split_plain(text):
     prot, idx = _protect(text)
     lex = shlex.shlex(prot, posix=True, punctuation_chars=_SEPS)
     lex.whitespace = ' \t\r'
@@ -142,11 +150,11 @@ def _split_plain(text: str) -> List[Simple]:
         raise ParseError(str(e)) from e
     spans = _spans(prot)
     use_spans = len(spans) == len(tokens)
-    result: List[Simple] = []
-    cur: List[str] = []
+    result = []
+    cur = []
     first = last = 0
 
-    def flush() -> None:
+    def flush():
         if cur:
             if use_spans:
                 raw = text[idx[first]:idx[last - 1] + 1]
@@ -168,7 +176,7 @@ def _split_plain(text: str) -> List[Simple]:
     return result
 
 
-def _shell_scan(argv: List[str], j: int) -> Optional[Tuple[str, int]]:
+def _shell_scan(argv, j):
     """Scan the flags after the shell word at argv[j].
 
     Returns ('c', payload_index) for a -c flag, ('flags', len) if only flags
@@ -185,7 +193,7 @@ def _shell_scan(argv: List[str], j: int) -> Optional[Tuple[str, int]]:
     return ('flags', k) if k >= len(argv) else None
 
 
-def _payload_of(argv: List[str]):
+def _payload_of(argv):
     """Return (text, kind) for the first sh -c / eval payload in argv, else None."""
     if argv and argv[0] == 'eval' and len(argv) > 1:
         return ' '.join(argv[1:]), 'eval'
@@ -197,7 +205,7 @@ def _payload_of(argv: List[str]):
     return None
 
 
-def _is_shell_reader(argv: Optional[List[str]]) -> bool:
+def _is_shell_reader(argv):
     if not argv:
         return False
     for j, w in enumerate(argv):
@@ -208,7 +216,7 @@ def _is_shell_reader(argv: Optional[List[str]]) -> bool:
     return False
 
 
-def _find_heredoc(line: str, q: Optional[str]):
+def _find_heredoc(line, q):
     """First `<<` outside quotes, comments and escapes. Returns (match, quote_state)."""
     i, n = 0, len(line)
     while i < n:
@@ -238,10 +246,10 @@ def _find_heredoc(line: str, q: Optional[str]):
     return None, q
 
 
-def _extract_heredocs(cmd: str):
+def _extract_heredocs(cmd):
     lines = cmd.split('\n')
-    kept: List[str] = []
-    bodies: List[str] = []
+    kept = []
+    bodies = []
     q = None
     i = 0
     while i < len(lines):
@@ -252,7 +260,7 @@ def _extract_heredocs(cmd: str):
             i += 1
             continue
         j = i + 1
-        body: List[str] = []
+        body = []
         while j < len(lines) and lines[j].strip() != m.group(2):
             body.append(lines[j])
             j += 1
@@ -264,9 +272,9 @@ def _extract_heredocs(cmd: str):
     return '\n'.join(kept), bodies
 
 
-def split_commands(cmd: str) -> List[Simple]:
+def split_commands(cmd):
     rest, bodies = _extract_heredocs(cmd)
-    out: List[Simple] = []
+    out = []
     for s in _split_plain(rest):
         out.append(s)
         p = _payload_of(s.argv)

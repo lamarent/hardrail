@@ -13,7 +13,7 @@ RUNS = 50
 WARMUP = 3
 LIMIT_MS = 100.0
 
-HEREDOC = "bash <<'EOF'\n" + ''.join('echo line %05d padding padding\n' % i for i in range(640)) + '\nEOF'
+HEREDOC = "bash <<'EOF'\n" + ''.join('echo test %05d padding padding\n' % i for i in range(640)) + '\nEOF'
 
 CASES = [
     ('fast path (git status)', 'git status'),
