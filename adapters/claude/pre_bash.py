@@ -16,7 +16,10 @@ try:
     event = json.load(sys.stdin)
     cwd = event.get("cwd") or os.getcwd()
     root = find_root(cwd)
-    d = decide(event["tool_input"]["command"], cwd, load(root) if root else DEFAULTS)
+    config = load(root) if root else DEFAULTS
+    if config.get("_load_error"):
+        sys.stderr.write("hardrail: config ignored (%s), using defaults\n" % config["_load_error"])
+    d = decide(event["tool_input"]["command"], cwd, config)
 except Exception as e:  # fail open: an internal error must never block the agent
     sys.stderr.write("hardrail: guard error: %s\n" % " ".join(str(e).split())[:200])
     sys.exit(0)

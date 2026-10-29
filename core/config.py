@@ -33,12 +33,25 @@ def _merge(base, override):
     return out
 
 
+def _fallback(reason):
+    out = copy.deepcopy(DEFAULTS)
+    out["_load_error"] = " ".join(reason.split())[:200]
+    return out
+
+
 def load(repo_root):
+    """Merged config. A broken file never disables the guard: it falls back to DEFAULTS
+    and records why under the `_load_error` key."""
     path = os.path.join(repo_root, CONFIG_NAME)
     if not os.path.isfile(path):
         return copy.deepcopy(DEFAULTS)
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        return _fallback("%s: %s" % (CONFIG_NAME, e))
+    if not isinstance(data, dict):
+        return _fallback("%s is not a JSON object" % CONFIG_NAME)
     return _merge(DEFAULTS, data)
 
 

@@ -46,6 +46,23 @@ class ConfigTest(unittest.TestCase):
         cfg["guard"]["gatedActions"].append("x")
         self.assertNotIn("x", config.DEFAULTS["guard"]["gatedActions"])
 
+    def _write(self, text):
+        root = tempfile.mkdtemp()
+        with open(os.path.join(root, "hardrail.config.json"), "w", encoding="utf-8") as f:
+            f.write(text)
+        return root
+
+    def test_invalid_json_falls_back_to_defaults(self):
+        cfg = config.load(self._write('{"guard": {"mode": "warn"},}'))
+        self.assertIn("hardrail.config.json", cfg["_load_error"])
+        self.assertEqual(cfg["guard"], config.DEFAULTS["guard"])
+        self.assertNotIn("_load_error", config.DEFAULTS)
+
+    def test_non_object_falls_back_to_defaults(self):
+        cfg = config.load(self._write('["guard"]'))
+        self.assertEqual(cfg["_load_error"], "hardrail.config.json is not a JSON object")
+        self.assertEqual(cfg["guard"]["mode"], "block")
+
     def test_find_root_walks_up(self):
         root = fixture_root("minimal.json")
         deep = os.path.join(root, "a", "b")

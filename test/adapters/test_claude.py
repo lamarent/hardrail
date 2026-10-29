@@ -1,11 +1,14 @@
 import json
 import os
+import sys
 import shutil
 import subprocess
 import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, ROOT)
+from core.config import DEFAULTS  # noqa: E402
 HOOK = os.path.join(ROOT, "adapters", "claude", "pre-bash.sh")
 FIXTURE = os.path.join(ROOT, "test", "fixtures", "pnpm-monorepo")
 
@@ -65,6 +68,39 @@ class ClaudeHookTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0)
         self.assertTrue(r.stderr.startswith("WARN [heavy]"), r.stderr)
         self.assertEqual(r.stdout, "")
+
+    def test_prefilter_covers_every_gated_and_heavy_entry(self):
+        # Without python3 on PATH, reaching the python step prints "guard disabled";
+        # a command dropped by the keyword pre-filter prints nothing.
+        path = self._no_python_path()
+        for entry in DEFAULTS["guard"]["gatedActions"] + DEFAULTS["heavy"]:
+            with self.subTest(entry=entry):
+                r = run_hook("%s x && git status" % entry, path=path)
+                self.assertIn("guard disabled", r.stderr)
+
+    def test_chained_stash_blocks(self):
+        r = run_hook("git stash && git status")
+        self.assertEqual(r.returncode, 2)
+        self.assertTrue(r.stderr.startswith("BLOCKED [chained_gated]"), r.stderr)
+
+    def test_invalid_config_falls_back_to_defaults(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "hardrail.config.json"), "w", encoding="utf-8") as f:
+            f.write('{"guard": {"mode": "warn"},}')
+        r = run_hook("pnpm test", hook_cwd=d)
+        self.assertEqual(r.returncode, 2)
+        lines = r.stderr.splitlines()
+        self.assertTrue(lines[0].startswith("hardrail: config ignored ("), r.stderr)
+        self.assertTrue(lines[0].endswith("), using defaults"), r.stderr)
+        self.assertTrue(lines[1].startswith("BLOCKED [unscoped_test]"), r.stderr)
+
+    def test_snippet_uses_project_dir(self):
+        with open(os.path.join(ROOT, "adapters", "claude", "hooks.snippet.json"), encoding="utf-8") as f:
+            snippet = json.load(f)
+        hook = snippet["hooks"]["PreToolUse"][0]
+        self.assertEqual(hook["matcher"], "Bash")
+        self.assertEqual(hook["hooks"][0]["command"], '"$CLAUDE_PROJECT_DIR"/.claude/hardrail/pre-bash.sh')
 
     def test_bad_json_fails_open(self):
         r = run_hook(raw="{")  # no command key: pre-filter falls through to python

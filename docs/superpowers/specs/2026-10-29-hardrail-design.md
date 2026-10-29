@@ -72,7 +72,7 @@ same report on the adopter's own transcripts.
 
 | Component | Where it lives in the adopting repo | Who gets it |
 |---|---|---|
-| Hooks | `.claude/settings.json` → `hooks` → `.claude/hardrail/hooks/*.py` | everyone who clones |
+| Hooks | `.claude/settings.json` → `hooks` → `"$CLAUDE_PROJECT_DIR"/.claude/hardrail/pre-bash.sh` (absolute, so a session `cd` cannot break it) | everyone who clones |
 | Rules, skills, agents | `.claude/rules/hardrail/`, `.claude/skills/hardrail-*/`, `.claude/agents/` | everyone |
 | Config | `hardrail.config.json` at repo root | everyone, and CI |
 | CI | `.github/workflows/hardrail.yml` | everyone, Claude user or not |
