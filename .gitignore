@@ -1,0 +1,4 @@
+node_modules/
+.worktrees/
+*.harness-new
+.DS_Store
