@@ -20,6 +20,9 @@ cmd=${input#*\"command\":}
 # A project config can add gatedActions the list does not know: skip the fast path then.
 [ -f "${CLAUDE_PROJECT_DIR:-.}/hardrail.config.json" ] && cmd=test
 case "$cmd" in
+  # Quotes, backslashes and expansions can split a keyword (pu''sh, $cmd); in the JSON
+  # text a quote inside the command shows as \". A shell name may read piped text.
+  *[\'\\\$\`]*|*'<('*|*sh*) ;;
   *test*|*vitest*|*jest*|*push*|*commit*|*reset*|*rebase*|*merge*|*stash*|*clean*|*gh*|*rm*|*docker*|*podman*|*turbo*|*tail*|*prisma*|*generate*|*install*|*build*|*playwright*|*logs*|*yarn*|*bun*|*npx*|*npm*) ;;
   *) exit 0 ;;
 esac
