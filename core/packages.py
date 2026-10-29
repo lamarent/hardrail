@@ -5,10 +5,9 @@ import json
 import os
 import re
 
+from core.argv import strip_env_and_wrappers
 from core.shell import Simple
 
-_ENV = re.compile(r'^[A-Za-z_]\w*=')
-_WRAPPERS = ('sudo', 'time', 'env', 'nohup', 'command', 'exec')
 _MANAGERS = ('pnpm', 'npm', 'yarn', 'bun')
 _ALL_FLAGS = ('-r', '--recursive', '--parallel')
 _ROOT_FLAGS = ('-w', '--workspace-root')
@@ -116,13 +115,11 @@ def _parse_flags(argv):
 
     Handles `--flag value`, `--flag=value`, `-C=value`, and short clusters (`-rF value`).
     """
-    i = 0
-    while i < len(argv) and (_ENV.match(argv[i]) or os.path.basename(argv[i]) in _WRAPPERS):
-        i += 1
-    if i >= len(argv) or os.path.basename(argv[i]) not in _MANAGERS:
+    argv = strip_env_and_wrappers(argv)[1]
+    if not argv or os.path.basename(argv[0]) not in _MANAGERS:
         return []
     out = []
-    i += 1
+    i = 1
     while i < len(argv) and argv[i].startswith('-') and argv[i] != '-':
         t = argv[i]
         nxt = argv[i + 1] if i + 1 < len(argv) else ""
@@ -158,10 +155,37 @@ def _filter_package(flt, repo_root):
     return pkg or "all"
 
 
+def _yarn_workspace(argv):
+    """`yarn workspace <name> ...` -> name; `yarn workspaces foreach ...` -> "all"; else None."""
+    argv = strip_env_and_wrappers(argv)[1]
+    if not argv or os.path.basename(argv[0]) != 'yarn':
+        return None
+    rest = [a for a in argv[1:] if not a.startswith('-')]
+    if rest[:1] == ['workspace'] and len(rest) > 1:
+        return rest[1]
+    if rest[:2] == ['workspaces', 'foreach']:
+        return "all"
+    return None
+
+
+def _cd_targets(simple, prev):
+    """Directories of every earlier `cd` in the same chain, in order; "-" for an unknown one."""
+    prevs = prev if isinstance(prev, (list, tuple)) else ([prev] if prev is not None else [])
+    out = []
+    for p in prevs:
+        if p.payload_of != simple.payload_of or not p.argv or p.argv[0] != "cd":
+            continue
+        args = [a for a in p.argv[1:] if a not in ('-L', '-P', '--')]
+        out.append(args[0] if args else "~")
+    return out
+
+
 def resolve_package(simple, cwd, config, repo_root,
                     prev=None):
     """Package a test command targets; "all" when it spans the workspace or cannot be resolved.
 
+    `prev` is the earlier simple command (or a list of them, in order); every `cd` among them
+    in the same chain is applied to `cwd` before resolving.
     Fails closed: a lookup miss (unknown filter, directory without package.json, path outside
     the repo) returns "all", never None. None only means no package.json above cwd.
     """
@@ -178,13 +202,21 @@ def resolve_package(simple, cwd, config, repo_root,
             target = value or ""
         elif flag in _FILTER_FLAGS:
             filters.append(value or "")
+    ws = _yarn_workspace(simple.argv)
+    if ws == "all":
+        return "all"
+    if ws:
+        filters.append(ws)
     if len(filters) > 1:
         return "all"
     if filters:
         return _filter_package(filters[0], repo_root)
-    if target is None and prev is not None and len(prev.argv) >= 2 and prev.argv[0] == "cd" \
-            and prev.payload_of == simple.payload_of:
-        base = os.path.join(base, _expand(prev.argv[1]))
+    cds = _cd_targets(simple, prev) if target is None else []
+    if cds:
+        for d in cds:
+            if d == "-":
+                return "all"
+            base = os.path.normpath(os.path.join(base, _expand(d)))
         if inside and not _within(base, repo_root):
             return "all"
         return _ancestor_package(base, repo_root if inside else None)

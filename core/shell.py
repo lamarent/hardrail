@@ -7,13 +7,13 @@ import shlex
 _SEPS = ';&|\n'
 _SENT = {c: chr(0xE000 + i) for i, c in enumerate(_SEPS)}
 _UNSENT = {v: k for k, v in _SENT.items()}
-_SHELLS = ('bash', 'sh', 'zsh')
+_SHELLS = ('bash', 'sh', 'zsh', 'dash')
 _HEREDOC = re.compile(r'<<-?\s*(["\']?)([A-Za-z_]\w*)\1')
 _C_FLAG = re.compile(r'-[A-Za-z]*c[A-Za-z]*')
 
 
 class Simple:
-    __slots__ = ("argv", "raw", "payload_of")  # payload_of: None | "sh -c" | "eval" | "heredoc"
+    __slots__ = ("argv", "raw", "payload_of")  # payload_of: None | "sh -c" | "eval" | "heredoc" | "subst"
 
     def __init__(self, argv, raw, payload_of=None):
         self.argv = argv
@@ -37,6 +37,12 @@ class ParseError(Exception):
 _MAX_BODY_LINES = 200
 _MAX_BODY_BYTES = 8192
 _TOO_LARGE = "payload too large to inspect; run it as a script file"
+_SUBST_PH = '_subst_'
+
+
+def _check_size(text):
+    if text.count('\n') >= _MAX_BODY_LINES or len(text.encode('utf-8', 'replace')) > _MAX_BODY_BYTES:
+        raise ParseError(_TOO_LARGE)
 
 
 def _s(c):
@@ -185,7 +191,7 @@ def _shell_scan(argv, j):
     """Scan the flags after the shell word at argv[j].
 
     Returns ('c', payload_index) for a -c flag, ('flags', len) if only flags
-    follow, else None. The argument after -o / -O is skipped.
+    follow or -s (read from stdin) is given, else None. The argument after -o / -O is skipped.
     """
     k = j + 1
     while k < len(argv) and argv[k].startswith('-'):
@@ -194,6 +200,8 @@ def _shell_scan(argv, j):
             continue
         if _C_FLAG.fullmatch(argv[k]) and k + 1 < len(argv):
             return 'c', k + 1
+        if argv[k] == '-s':
+            return 'flags', k
         k += 1
     return ('flags', k) if k >= len(argv) else None
 
@@ -202,6 +210,12 @@ def _payload_of(argv):
     """Return (text, kind) for the first sh -c / eval payload in argv, else None."""
     if argv and argv[0] == 'eval' and len(argv) > 1:
         return ' '.join(argv[1:]), 'eval'
+    for j, w in enumerate(argv):
+        if w.startswith('<<<'):
+            text = w[3:] if len(w) > 3 else (argv[j + 1] if j + 1 < len(argv) else '')
+            if _is_shell_reader(argv[:j] + argv[j + (1 if len(w) > 3 else 2):]):
+                _check_size(text)
+                return text, 'heredoc'
     for j, w in enumerate(argv):
         if os.path.basename(w) in _SHELLS:
             r = _shell_scan(argv, j)
@@ -251,6 +265,121 @@ def _find_heredoc(line, q):
     return None, q
 
 
+def _pipes_to_shell(after):
+    """True when a later stage of the pipeline in `after` is a shell reading stdin."""
+    prot = _protect(after)[0]
+    end = len(prot)
+    for k, ch in enumerate(prot):
+        if ch in ';&\n' or (ch == '|' and prot[k + 1:k + 2] == '|'):
+            end = k
+            break
+    for stage in prot[:end].split('|')[1:]:
+        simples = _split_plain(_restore(stage))
+        if simples and _is_shell_reader(simples[0].argv):
+            return True
+    return False
+
+
+def _skip_bodies(cmd, i, pending):
+    """cmd[i] is a newline after heredoc operators; skip their bodies.
+
+    Returns the index of the newline that ends the last delimiter line (or len(cmd)).
+    """
+    n = len(cmd)
+    for delim in pending:
+        while i < n:
+            j = cmd.find('\n', i + 1)
+            j = n if j < 0 else j
+            line = cmd[i + 1:j]
+            i = j
+            if line.strip() == delim:
+                break
+    del pending[:]
+    return i
+
+
+def _walk(cmd, i, close):
+    """Scan cmd from i for command substitutions.
+
+    `close` is None at the top level, else ')' or '`' for the substitution being scanned.
+    Returns (index after the closing char, [(start, body_start, body_end, end)]) for the
+    substitutions found directly at this level (nested ones are found when the body is split).
+    Process substitutions `<(...)` / `>(...)` count too. Single quotes and heredoc bodies
+    are skipped; `$((` arithmetic yields no body.
+    """
+    n = len(cmd)
+    q = None
+    depth = 0
+    pending = []
+    found = []
+    while i < n:
+        c = cmd[i]
+        if q == "'":
+            if c == "'":
+                q = None
+            i += 1
+            continue
+        if c == '\\':
+            i += 2
+            continue
+        if close == '`' and c == '`':
+            return i + 1, found
+        if c == '`' or cmd.startswith('$(', i) or (q is None and cmd.startswith(('<(', '>('), i)):
+            body = i + (1 if c == '`' else 2)
+            end = _walk(cmd, body, '`' if c == '`' else ')')[0]
+            if not cmd.startswith('$((', i):
+                found.append((i, body, end - 1, end))
+            i = end
+            continue
+        if q == '"':
+            if c == '"':
+                q = None
+        elif c == '\n' and pending:
+            i = _skip_bodies(cmd, i, pending)
+            continue
+        elif c in '\'"':
+            q = c
+        elif c == '#' and (i == 0 or cmd[i - 1] in ' \t\n;&|('):
+            while i < n and cmd[i] != '\n':
+                i += 1
+            continue
+        elif cmd.startswith('<<', i) and not cmd.startswith('<<<', i):
+            m = _HEREDOC.match(cmd, i)
+            if m:
+                pending.append(m.group(2))
+                i = m.end()
+                continue
+            i += 2
+            continue
+        elif close == ')' and c == '(':
+            depth += 1
+        elif close == ')' and c == ')':
+            if depth == 0:
+                return i + 1, found
+            depth -= 1
+        i += 1
+    if close:
+        raise ParseError("unbalanced command substitution")
+    return n, found
+
+
+def _extract_substs(cmd):
+    """Replace each $(...) / `...` with a placeholder word; return (text, bodies)."""
+    if '$(' not in cmd and '`' not in cmd and '<(' not in cmd and '>(' not in cmd:
+        return cmd, []
+    found = _walk(cmd, 0, None)[1]
+    out = []
+    bodies = []
+    last = 0
+    for start, b0, b1, end in found:
+        out.append(cmd[last:start])
+        out.append(_SUBST_PH)
+        bodies.append(cmd[b0:b1])
+        last = end
+    out.append(cmd[last:])
+    return ''.join(out), bodies
+
+
 def _extract_heredocs(cmd):
     lines = cmd.split('\n')
     kept = []
@@ -272,7 +401,7 @@ def _extract_heredocs(cmd):
         i = j + 1
         kept.append(line[:m.start()] + line[m.end():])
         prefix = _split_plain(line[:m.start()])
-        if prefix and _is_shell_reader(prefix[-1].argv):
+        if (prefix and _is_shell_reader(prefix[-1].argv)) or _pipes_to_shell(line[m.end():]):
             text = '\n'.join(body)
             if len(body) > _MAX_BODY_LINES or len(text.encode('utf-8', 'replace')) > _MAX_BODY_BYTES:
                 raise ParseError(_TOO_LARGE)
@@ -281,6 +410,7 @@ def _extract_heredocs(cmd):
 
 
 def split_commands(cmd):
+    cmd, substs = _extract_substs(cmd)
     rest, bodies = _extract_heredocs(cmd)
     out = []
     for s in _split_plain(rest):
@@ -293,5 +423,9 @@ def split_commands(cmd):
     for body in bodies:
         for inner in split_commands(body):
             inner.payload_of = inner.payload_of or 'heredoc'
+            out.append(inner)
+    for body in substs:
+        for inner in split_commands(body):
+            inner.payload_of = inner.payload_of or 'subst'
             out.append(inner)
     return out

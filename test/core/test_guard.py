@@ -46,6 +46,42 @@ class GuardTest(unittest.TestCase):
         d = decide("pnpm -r test", "/tmp", self.config)
         self.assertIn("--filter <name>", d.message)
 
+    def test_package_script_message_relative_to_cwd(self):
+        cwd = os.path.join(ROOT, "test/fixtures/pnpm-monorepo/packages/web")
+        d = decide("pnpm test", cwd, self.config)
+        self.assertEqual(d.action, "block")
+        self.assertIn("exec vitest --run", d.message)
+        self.assertNotIn("-C packages/web", d.message)
+        self.assertNotIn("-C ", d.message)
+
+    def _msg(self, command):
+        return decide(command, "/tmp", self.config).message
+
+    def test_watch_fix_docker_logs(self):
+        self.assertIn("use docker compose logs --tail=200 api", self._msg("docker compose logs -f api"))
+
+    def test_watch_fix_playwright_drops_flag(self):
+        self.assertTrue(self._msg("pnpm exec playwright test --ui e2e/a.spec.ts")
+                        .endswith("pnpm exec playwright test e2e/a.spec.ts"))
+
+    def test_watch_fix_test_watch_script(self):
+        self.assertIn("run the package's `test` script with a path", self._msg("pnpm test:watch"))
+
+    def test_watch_fix_vitest(self):
+        self.assertTrue(self._msg("vitest src/a.test.ts").endswith("pnpm exec vitest --run src/a.test.ts"))
+
+    def test_watch_fix_jest(self):
+        self.assertTrue(self._msg("jest --watch src/a.test.ts").endswith("jest --watchAll=false src/a.test.ts"))
+
+    def test_heavy_message_neutral_and_actual_command(self):
+        m = self._msg("pnpm -r build")
+        self.assertEqual(m, "heavy command; run it outside the agent loop or in a background task: pnpm -r build")
+        self.assertNotIn("runner", m)
+
+    def test_chained_gated_names_gated_part(self):
+        self.assertIn("run `git push origin main` as its own call",
+                      self._msg("git status && git push origin main"))
+
     def test_message_on_single_line(self):
         for command, *_ in ROWS:
             with self.subTest(command=command):

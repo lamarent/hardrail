@@ -99,6 +99,31 @@ class SplitTests(unittest.TestCase):
         s = split_commands('sudo bash <<EOF\ngit push\nEOF')
         self.assertEqual((s[-1].argv, s[-1].payload_of), (['git', 'push'], 'heredoc'))
 
+    def test_substitution_is_payload(self):
+        s = split_commands('echo "$(git push -f)" `ls`')
+        self.assertEqual([(x.argv, x.payload_of) for x in s],
+                         [(['echo', '_subst_', '_subst_'], None),
+                          (['git', 'push', '-f'], 'subst'), (['ls'], 'subst')])
+
+    def test_substitution_heredoc_body_not_scanned(self):
+        s = split_commands("git commit -m \"$(cat <<'EOF'\nit's ) done; ok\nEOF\n)\"")
+        self.assertEqual([x.argv for x in s], [['git', 'commit', '-m', '_subst_'], ['cat']])
+
+    def test_unbalanced_substitution_raises(self):
+        with self.assertRaises(ParseError):
+            split_commands('echo $(ls')
+
+    def test_heredoc_piped_into_shell(self):
+        s = split_commands('cat <<EOF | bash\ngit push\nEOF')
+        self.assertEqual((s[-1].argv, s[-1].payload_of), (['git', 'push'], 'heredoc'))
+
+    def test_here_string_into_shell(self):
+        s = split_commands('sh <<< "git push"')
+        self.assertEqual((s[-1].argv, s[-1].payload_of), (['git', 'push'], 'heredoc'))
+
+    def test_here_string_into_cat_dropped(self):
+        self.assertEqual(len(split_commands('cat <<< "git push"')), 1)
+
 
 if __name__ == '__main__':
     unittest.main()
