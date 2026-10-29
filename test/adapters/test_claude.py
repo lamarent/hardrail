@@ -180,11 +180,17 @@ class ClaudeHookTest(unittest.TestCase):
         self.assertEqual((r.returncode, r.stderr), (0, ""))
 
     def test_config_present_skips_fast_path(self):
-        d = self._config_dir('{"guard": {"gatedActions": ["terraform apply"]}}')
-        raw = json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls && terraform apply"}, "cwd": d})
-        r = run_hook(raw=raw, extra_env={"CLAUDE_PROJECT_DIR": d})
+        # "kubectl apply" hits no keyword, so only the config skip can send it to python.
+        d = self._config_dir('{"guard": {"gatedActions": ["kubectl apply"]}}')
+        env = {"CLAUDE_PROJECT_DIR": d}
+        raw = json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls && kubectl apply"}, "cwd": d})
+        r = run_hook(raw=raw, extra_env=env)
         self.assertEqual(r.returncode, 2, r.stderr)
         self.assertIn("chained_gated", r.stderr)
+        os.remove(os.path.join(d, "hardrail.config.json"))
+        raw = json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls && kubectl apply"}, "cwd": "/"})
+        r = run_hook(raw=raw, extra_env=env)
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
 
     def test_snippet_has_timeout(self):
         with open(os.path.join(ROOT, "adapters", "claude", "hooks.snippet.json"), encoding="utf-8") as f:

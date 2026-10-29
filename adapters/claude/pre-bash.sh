@@ -4,6 +4,7 @@ set -u
 input=$(cat)
 [ -n "$input" ] || exit 0
 s=$0
+# Only one symlink level is resolved (a link to a link is not followed).
 if [ -L "$s" ]; then
   s=$(readlink "$s")
   case "$s" in /*) ;; *) s="$(dirname "$0")/$s" ;; esac
