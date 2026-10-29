@@ -1,4 +1,4 @@
-# claude-harness — design
+# hardrail — design
 
 Date: 2026-10-29. Status: approved by owner after four independent reviews
 (Claude Code mechanics, scope, hook/CI safety, hiring-reader).
@@ -30,7 +30,7 @@ same report on the adopter's own transcripts.
 ## Goals
 
 1. One command adopts it in a new or existing TS repo; no hand-edited paths.
-2. Every project-specific fact lives in `harness.config.json`; everything else reads it.
+2. Every project-specific fact lives in `hardrail.config.json`; everything else reads it.
 3. Runtime never depends on the plugin: hooks, rules and CI live in the adopting repo.
 4. Each rule is enforced at the lowest tier that actually holds: prose → hook → CI.
 5. `init` never modifies a file the repo already had.
@@ -61,7 +61,7 @@ same report on the adopter's own transcripts.
 - Hook p95 latency < 100 ms, measured in this repo's CI, cold and warm.
 - Minimum Claude Code version pinned in the manifest (the version where plugin `bin/`,
   `${CLAUDE_PLUGIN_DATA}`, `PostCompact` and `.worktreeinclude` all exist).
-- Licence MIT. Public repo `claude-harness`; plugin name `harness-kit` (names starting
+- Licence MIT. Public repo `hardrail`; plugin name `hardrail` (names starting
   with `claude-` are reserved).
 - macOS and Linux. Windows out of v1.
 
@@ -69,17 +69,17 @@ same report on the adopter's own transcripts.
 
 | Component | Where it lives in the adopting repo | Who gets it |
 |---|---|---|
-| Hooks | `.claude/settings.json` → `hooks` → `.claude/harness/hooks/*.py` | everyone who clones |
-| Rules, skills, agents | `.claude/rules/harness/`, `.claude/skills/harness-*/`, `.claude/agents/` | everyone |
-| Config | `harness.config.json` at repo root | everyone, and CI |
-| CI | `.github/workflows/harness.yml` | everyone, Claude user or not |
-| Manifest | `.claude/.harness-manifest.json` (version + content hash per installed file) | `init --check` |
+| Hooks | `.claude/settings.json` → `hooks` → `.claude/hardrail/hooks/*.py` | everyone who clones |
+| Rules, skills, agents | `.claude/rules/hardrail/`, `.claude/skills/hardrail-*/`, `.claude/agents/` | everyone |
+| Config | `hardrail.config.json` at repo root | everyone, and CI |
+| CI | `.github/workflows/hardrail.yml` | everyone, Claude user or not |
+| Manifest | `.claude/.hardrail-manifest.json` (version + content hash per installed file) | `init --check` |
 | Plugin reference | `.claude/settings.json` → `extraKnownMarketplaces`, `enabledPlugins` | Claude Code prompts to install |
 
-The plugin `harness-kit` provides only `harness init | check | upgrade` and the fixture
+The plugin `hardrail` provides only `hardrail init | check | upgrade` and the fixture
 tooling. If it is absent, every guard still runs. Whether project-scope `enabledPlugins`
 prompts teammates to install is verified during the build; if it does not, teammates use
-`npx` from the harness repo for `upgrade` only.
+`npx` from the hardrail repo for `upgrade` only.
 
 Existing `.claude/settings.json`: `init` prints the `hooks` snippet and does not edit the
 file. `init --check` (also the CI self-check) fails until the hooks are registered, so an
@@ -87,7 +87,7 @@ inactive guard cannot persist silently.
 
 ## The parts
 
-### 1. `harness.config.json`
+### 1. `hardrail.config.json`
 
 ```jsonc
 {
@@ -146,10 +146,10 @@ e.g. `routes → usecases → repositories`, wired into `conventionChecks`).
 ### 5. `init`
 
 ```
-harness init              # detect → confirmation table → install → smoke → manifest
-harness init --check      # schema, manifest drift, hooks active, python3 present, stale renders
-harness init --upgrade    # untouched files updated in place; edited files get .harness-new
-harness init --render     # re-render rules after a config edit
+hardrail init              # detect → confirmation table → install → smoke → manifest
+hardrail init --check      # schema, manifest drift, hooks active, python3 present, stale renders
+hardrail init --upgrade    # untouched files updated in place; edited files get .hardrail-new
+hardrail init --render     # re-render rules after a config edit
 ```
 
 Detection reads lockfile, `package.json`, `pnpm-workspace.yaml` (minimal `packages:`
@@ -157,12 +157,12 @@ parser) / `workspaces`, `biome.json` / `.eslintrc*`, `lefthook.yml` / `.husky/`,
 `prisma/`, `.github/workflows/*`, `.worktrees/`, `.worktreeinclude`. It prints the table,
 including each rule's byte cost, and stops for confirmation.
 
-Install rules: a path the repo lacks → written; a path that exists → `<name>.harness-new`
+Install rules: a path the repo lacks → written; a path that exists → `<name>.hardrail-new`
 beside it, listed at the end; the repo's own `agents/`, `commands/`, `skills/` untouched;
 `.github/workflows/` follows the same rule; the generated workflow is non-required at
 first and says so; `.gitignore` is never edited — new directories carry their own
 `.gitignore` (`.worktrees/.gitignore`, metrics store outside the repo under
-`${CLAUDE_PLUGIN_DATA}` or `~/.claude-harness/<repo-id>/`). Second run is idempotent via
+`${CLAUDE_PLUGIN_DATA}` or `~/.hardrail/<repo-id>/`). Second run is idempotent via
 the manifest. Plugin and repo hooks both present → `init` refuses, to avoid double firing.
 
 Smoke test reads the **effective** settings (`settings.json`, `settings.local.json`) and
@@ -173,7 +173,7 @@ window and never changes it.
 
 ### 6. CI layer
 
-`harness ci` writes `.github/workflows/harness.yml`:
+`hardrail ci` writes `.github/workflows/hardrail.yml`:
 
 - **scoped-tests**: `fetch-depth: 0`; diff `git merge-base origin/<base> HEAD` with
   `--name-status -M`; narrow only when every changed file is a `.ts/.tsx` source or test
@@ -187,7 +187,7 @@ window and never changes it.
 - **codegen-in-sync**, **conventions**, **self-check** (`init --check`, `claude plugin
   validate --strict` when the plugin is referenced).
 - Hardening: `pull_request` only, never `pull_request_target`; `permissions: contents:
-  read`; actions pinned by SHA; `harness.config.json` read from the base branch; no
+  read`; actions pinned by SHA; `hardrail.config.json` read from the base branch; no
   `paths:` filter on a required job.
 
 ### 7. `metrics blocks`
@@ -211,7 +211,7 @@ tests); others follow with the same template. No counts.
 | bash-guard | table of ≥ 40 commands incl. `p"n"pm test`, `npm test`, newline/`&` chains, heredoc into `bash`, `-C`/`--filter`, `tests/unit/`, `find -exec rm {} \;`, `docker run sh -c "a; b"` | every row as expected |
 | latency | 50 runs, cold + warm | p95 < 100 ms |
 | worktree-guard | fixture with `.worktrees/`; edit in main vs worktree; warn mode | blocks only in main; warn never blocks |
-| init no-overwrite | fixture with existing `.claude/` + `settings.json`; hash all files before/after; run twice | hashes unchanged; `.harness-new` present; second run writes nothing |
+| init no-overwrite | fixture with existing `.claude/` + `settings.json`; hash all files before/after; run twice | hashes unchanged; `.hardrail-new` present; second run writes nothing |
 | init --check | edit an installed file; remove a hook entry | non-zero, names the file / the hook |
 | scoped-tests mapping | 2-package fixture; matrix: has test, no test, rename, delete, barrel, shared type, lockfile, dependent package | correct set per case; never 0 tests on a code change |
 | generated workflow | `actionlint`; run on fixture (`act` or this repo's Actions) | green on clean fixture, red on a planted violation |
@@ -238,13 +238,13 @@ third tier.
 ## Repo layout
 
 ```
-claude-harness/
-  .claude-plugin/plugin.json      # name: harness-kit
-  bin/harness                     # init | check | upgrade | render | ci | metrics (Node, no deps)
+hardrail/
+  .claude-plugin/plugin.json      # name: hardrail
+  bin/hardrail                    # init | check | upgrade | render | ci | metrics (Node, no deps)
   hooks/                          # python3 sources copied into adopters
   templates/rules/ templates/skills/ templates/agents/ templates/workflows/
   modules/<name>/                 # optional modules
-  schema/harness.config.schema.json
+  schema/hardrail.config.schema.json
   test/fixtures/ test/guard/ test/init/ test/ci/
   docs/catalog/ docs/superpowers/specs/
   README.md                       # quick start → mechanism → verify it yourself

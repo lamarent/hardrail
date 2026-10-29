@@ -1,4 +1,4 @@
 node_modules/
 .worktrees/
-*.harness-new
+*.hardrail-new
 .DS_Store
