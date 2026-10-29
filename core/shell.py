@@ -15,7 +15,16 @@ _KEYWORDS = ('if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', '{', 'ti
 _CLOSERS = ('fi', 'done', 'esac', '}')
 _FUNC_DEF = re.compile(r'^\w+\(\)\{?$')
 _STDIN_SCRIPT = ('-', '/dev/stdin', '/dev/fd/0')
-_SUDO_VALUE_OPTS = ('-u', '-g', '-C', '-D', '-h', '-p', '-R', '-T', '-U')
+# Options that take a value (next word), for wrappers whose options the parser walks.
+SUDO_VALUE_OPTS = ('-u', '-g', '-h', '-p', '-C', '-D', '-r', '-t', '-T', '-U', '-R',
+                   '--user', '--group', '--host', '--prompt', '--close-from', '--chdir',
+                   '--role', '--type', '--command-timeout', '--other-user', '--chroot')
+DOAS_VALUE_OPTS = ('-u', '-C')
+# Wrapper -> (value options, options that run the command or stdin through a shell).
+_SHELL_WRAPPERS = {
+    'sudo': (SUDO_VALUE_OPTS, ('-s', '-i', '--shell', '--login')),
+    'doas': (DOAS_VALUE_OPTS, ('-s',)),
+}
 _ASSIGN = re.compile(r'^[A-Za-z_]\w*=')
 _REDIR = re.compile(r'^\d*[<>]{1,2}&?\S*$')
 _BARE_REDIR = ('<', '>', '>>', '2>', '&>', '&>>')
@@ -337,6 +346,35 @@ def _shell_scan(argv, j):
     return None
 
 
+def scan_opts(argv, i, values):
+    """Getopt-style walk over the options starting at argv[i].
+
+    Returns (index of the first word after the options, options seen). A short value
+    option takes the rest of its word or the next word (`-uroot`, `-Eu bob`); `--opt val`
+    takes the next word for a value option, `--opt=val` is one word; `--` ends options.
+    Options are reported as `-x` per short letter and `--name` for long ones.
+    """
+    seen = []
+    n = len(argv)
+    while i < n and argv[i].startswith('-') and argv[i] != '-':
+        a = argv[i]
+        i += 1
+        if a == '--':
+            break
+        if a.startswith('--'):
+            seen.append(a.partition('=')[0])
+            if a in values:
+                i += 1
+            continue
+        for k in range(1, len(a)):
+            seen.append('-' + a[k])
+            if '-' + a[k] in values:
+                if k == len(a) - 1:
+                    i += 1
+                break
+    return i, seen
+
+
 def _payload_of(argv):
     """Return (text, kind) for the first sh -c / eval payload in argv, else None.
 
@@ -366,7 +404,7 @@ def _payload_of(argv):
     for j, w in enumerate(argv):
         name = os.path.basename(w)
         text = _su_command(argv[j + 1:]) if name == 'su' else \
-            _sudo_shell_command(argv[j + 1:]) if name == 'sudo' else None
+            _sudo_shell_command(name, argv[j + 1:]) if name in _SHELL_WRAPPERS else None
         if text is not None:
             _check_size(text)
             return text, 'sh -c'
@@ -408,36 +446,29 @@ def _su_command(rest):
     return None
 
 
-def _sudo_shell_command(rest):
-    """The words `sudo -s|-i <words>` hands to the shell, joined; else None."""
-    shell = False
-    k = 0
-    while k < len(rest) and rest[k].startswith('-') and rest[k] != '-':
-        w = rest[k]
-        k += 1
-        if w == '--':
-            break
-        if not w.startswith('--') and ('s' in w[1:] or 'i' in w[1:]):
-            shell = True
-        k += 1 if w in _SUDO_VALUE_OPTS else 0
+def _shell_wrapper_opts(name, rest):
+    """(index after the options, runs a shell) for `sudo` / `doas` options in rest."""
+    values, shell_flags = _SHELL_WRAPPERS[name]
+    k, seen = scan_opts(rest, 0, values)
+    return k, any(f in shell_flags for f in seen)
+
+
+def _sudo_shell_command(name, rest):
+    """The words `sudo -s|-i|--shell|--login <words>` hands to the shell, joined; else None."""
+    k, shell = _shell_wrapper_opts(name, rest)
     return ' '.join(rest[k:]) if shell and k < len(rest) else None
 
 
 def _su_reader(argv):
-    """`sudo -s` / `sudo -i` or `su [user]` with no command: an interactive shell on stdin."""
+    """`sudo -s|-i`, `doas -s` or `su [user]` with no command: an interactive shell on stdin."""
     name = os.path.basename(argv[0])
     rest = argv[1:]
     if name == 'su':
         rest = [w for w in rest if not w.startswith('-')]
         return len(rest) <= 1
-    if name != 'sudo':
+    if name not in _SHELL_WRAPPERS:
         return False
-    shell = False
-    k = 0
-    while k < len(rest) and rest[k].startswith('-') and rest[k] != '--':
-        w = rest[k]
-        shell = shell or (not w.startswith('--') and ('s' in w[1:] or 'i' in w[1:]))
-        k += 2 if w in _SUDO_VALUE_OPTS else 1
+    k, shell = _shell_wrapper_opts(name, rest)
     return shell and k >= len(rest)
 
 

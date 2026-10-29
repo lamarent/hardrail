@@ -4,10 +4,10 @@ import os
 import re
 import shlex
 
-from core.argv import skip_manager_opts, strip_env_and_wrappers
+from core.argv import XARGS_ERR, skip_manager_opts, strip_env_and_wrappers, xargs_writes_command
 from core.config import find_root
 from core.packages import Package, resolve_package
-from core.shell import ParseError, Simple, split_commands
+from core.shell import ParseError, _is_pipe, split_commands
 
 _PATH_ARG = re.compile(r'\.(test|spec)\.(ts|tsx|js|jsx)$')
 _SHORT_F = re.compile(r'^-[A-Za-z]*f[A-Za-z]*$')
@@ -57,10 +57,6 @@ def _glob_match(pattern, text):
     return rx.fullmatch(text) is not None
 
 
-_strip_env = strip_env_and_wrappers
-_skip_opts = skip_manager_opts
-
-
 def _strip_git(argv):
     """['/usr/bin/git', '--git-dir', 'x', 'push', ...] -> ['git', 'push', ...]."""
     if not argv or os.path.basename(argv[0]) != 'git':
@@ -72,7 +68,7 @@ def _strip_git(argv):
 
 
 def _cmd(s):
-    c = _strip_git(_strip_env(s.argv)[1])
+    c = _strip_git(strip_env_and_wrappers(s.argv)[1])
     return [os.path.basename(c[0])] + c[1:] if c else c
 
 
@@ -83,18 +79,21 @@ def _is_script(name):
 _SPLIT_CACHE = {}
 
 
-def _split_cached(cmd):
+def _split_cached(cmd, key):
     if cmd not in _SPLIT_CACHE:
-        _SPLIT_CACHE[cmd] = shlex.split(cmd)
+        try:
+            _SPLIT_CACHE[cmd] = shlex.split(cmd)
+        except ValueError as e:
+            raise ParseError("config %s cannot be parsed (%s); fix hardrail.config.json" % (key, e)) from e
     return list(_SPLIT_CACHE[cmd])
 
 
 def _configured_tests(config):
-    cmds = [config.get('defaults', {}).get('test')]
-    for pkg in config.get('packages', {}).values():
+    cmds = [('defaults.test', config.get('defaults', {}).get('test'))]
+    for name, pkg in config.get('packages', {}).items():
         if isinstance(pkg, dict):
-            cmds.append(pkg.get('test'))
-    return [_split_cached(c) for c in cmds if isinstance(c, str) and c.strip()]
+            cmds.append(('packages.%s.test' % name, pkg.get('test')))
+    return [_split_cached(c, key) for key, c in cmds if isinstance(c, str) and c.strip()]
 
 
 def _direct(rest):
@@ -112,18 +111,18 @@ def _runner(argv, config):
     if hit:
         return hit
     if base in ('npx', 'bunx'):
-        return _direct(_skip_opts(argv[1:], base))
+        return _direct(skip_manager_opts(argv[1:], base))
     if base in _PKG_MANAGERS:
-        rest = _skip_opts(argv[1:], base)
+        rest = skip_manager_opts(argv[1:], base)
         if not rest:
             return None
-        hit = _direct(_skip_opts(rest[1:]) if rest[0] in ('exec', 'dlx') else rest)
+        hit = _direct(skip_manager_opts(rest[1:]) if rest[0] in ('exec', 'dlx') else rest)
         if hit:
             return hit
         if base == 'yarn' and rest[0] == 'workspace' and len(rest) > 2:
-            rest = _skip_opts(rest[2:]) or ['']
+            rest = skip_manager_opts(rest[2:]) or ['']
         elif base == 'yarn' and rest[:2] == ['workspaces', 'foreach']:
-            rest = _skip_opts(rest[2:]) or ['']
+            rest = skip_manager_opts(rest[2:]) or ['']
         if rest[0] == 'run' and len(rest) > 1:
             rest = rest[1:]
         if _is_script(rest[0]):
@@ -173,11 +172,20 @@ def rule_force_push(simples, config, cwd="."):
 
 def _gated_forms(c):
     """The command as written, and with manager options / run / exec / dlx dropped:
-    `pnpm --filter x add zod` -> also `pnpm add zod` and `add zod`."""
+    `pnpm --filter x add zod` -> also `pnpm add zod` and `add zod`. A `run` target is a
+    script name, so it is not matched on its own: `pnpm run rm` is not `rm`."""
     if not c:
         return [c]
     form = _heavy_form(c).split()
-    return [c, [c[0]] + form, form]
+    is_script = os.path.basename(c[0]) in _PKG_MANAGERS and skip_manager_opts(c[1:], c[0])[:1] == ['run']
+    return [c, [c[0]] + form] if is_script else [c, [c[0]] + form, form]
+
+
+def rule_xargs_stdin(simples, config, cwd="."):
+    for s in simples:
+        if _is_pipe(s.sep) and xargs_writes_command(s.argv):
+            return _unparsable(config, XARGS_ERR)
+    return None
 
 
 def _is_gated(s, config):
@@ -224,7 +232,7 @@ def _without(argv, drop):
 
 def _watch_fix(s, config):
     """The one-shot command for a watch-mode simple, or None when it does not watch."""
-    env, argv = _strip_env(s.argv)
+    env, argv = strip_env_and_wrappers(s.argv)
     if any(e.startswith('CI=') for e in env) and not _explicit_watch(argv):
         return None
     c = _strip_git(argv)
@@ -296,7 +304,7 @@ def _unscoped_decision(s, prev, name, args,
 
 def rule_unscoped_test(simples, config, cwd="."):
     for i, s in enumerate(simples):
-        hit = _runner(_strip_env(s.argv)[1], config)
+        hit = _runner(strip_env_and_wrappers(s.argv)[1], config)
         if not hit:
             continue
         prev = [p for p in simples[:i] if p.payload_of == s.payload_of]
@@ -308,7 +316,7 @@ def rule_unscoped_test(simples, config, cwd="."):
 
 def _heavy_form(argv):
     if argv and os.path.basename(argv[0]) in _PKG_MANAGERS + ('npx', 'bunx'):
-        argv = _skip_opts(argv[1:], os.path.basename(argv[0]))
+        argv = skip_manager_opts(argv[1:], os.path.basename(argv[0]))
         if argv[:1] in (['run'], ['exec'], ['dlx']):
             argv = argv[1:]
     return ' '.join(argv)
@@ -323,7 +331,7 @@ def rule_heavy(simples, config, cwd="."):
     return None
 
 
-RULES = [rule_force_push, rule_chained_gated, rule_watch_mode,
+RULES = [rule_force_push, rule_xargs_stdin, rule_chained_gated, rule_watch_mode,
                      rule_unscoped_test, rule_heavy]
 
 

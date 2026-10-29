@@ -24,6 +24,18 @@ class GuardTest(unittest.TestCase):
         self.config['defaults']['test'] = "pnpm exec 'vitest"
         d = decide('ls', '/tmp', self.config)
         self.assertEqual((d.action, d.rule), ('block', 'unparsable'))
+        self.assertIn('defaults.test cannot be parsed', d.message)
+        self.assertIn('hardrail.config.json', d.message)
+
+    def test_no_row_hits_the_catch_all(self):
+        for command, _action, _rule, *cwd in ROWS:
+            with self.subTest(command=command):
+                d = decide(command, os.path.join(ROOT, *cwd) if cwd else "/tmp", self.config)
+                self.assertNotIn('could not evaluate', d.message)
+
+    def test_xargs_stdin_message(self):
+        d = decide("echo 'push -f' | xargs git", '/tmp', self.config)
+        self.assertIn('xargs builds the command from stdin', d.message)
 
     def test_non_utf8_workspace_yaml(self):
         tmp = self._tmpdir()
@@ -38,8 +50,7 @@ class GuardTest(unittest.TestCase):
         with open(os.path.join(tmp, 'package.json'), 'w') as f:
             f.write('[' * 100000)
         d = decide('pnpm test src/a.test.ts', tmp, self.config)
-        self.assertIn(d.action, ('allow', 'block'))
-        self.assertNotEqual(d.rule, 'unparsable', d.message)
+        self.assertEqual((d.action, d.rule), ('allow', ''), d.message)
 
     def test_chained_message_names_inner_command(self):
         self.assertIn('git commit -m x', decide('bash -c "git commit -m x"', '/tmp', self.config).message)

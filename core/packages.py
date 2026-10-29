@@ -6,7 +6,6 @@ import os
 import re
 
 from core.argv import manager_flags, strip_env_and_wrappers
-from core.shell import Simple
 
 _ALL_FLAGS = ('-r', '--recursive', '--parallel')
 _ROOT_FLAGS = ('-w', '--workspace-root')

@@ -3,18 +3,22 @@
 import os
 import re
 
-from core.shell import ParseError, variable_command_word
+from core.shell import (_SHELLS, DOAS_VALUE_OPTS, SUDO_VALUE_OPTS, ParseError, scan_opts,
+                        variable_command_word)
 
 _ENV = re.compile(r'^[A-Za-z_]\w*=')
 WRAPPERS = {  # name -> options that take a value (next word)
-    'sudo': ('-u', '-g', '-h', '-p', '-C', '-D', '-r', '-t', '-T', '-U', '--user', '--group'),
-    'doas': ('-u', '-C'), 'env': ('-u', '--unset', '-C', '--chdir'),
+    'sudo': SUDO_VALUE_OPTS,
+    'doas': DOAS_VALUE_OPTS, 'env': ('-u', '--unset', '-C', '--chdir'),
     'nohup': (), 'command': (), 'exec': ('-a',), 'time': (), 'corepack': (),
     'timeout': ('-s', '--signal', '-k', '--kill-after'), 'nice': ('-n', '--adjustment'),
     'ionice': ('-c', '-n', '-p'), 'stdbuf': ('-i', '-o', '-e'), 'chronic': (),
     'xargs': ('-I', '-n', '-P', '-d', '-L', '-s', '-E', '-a', '--max-args', '--max-procs', '--delimiter'),
 }
 POSITIONAL_AFTER = {'timeout': 1}   # words consumed after the options (the duration)
+# Commands xargs may build from piped input: they only read.
+XARGS_READ_ONLY = ('ls', 'cat', 'grep', 'rg', 'wc', 'head', 'tail', 'stat', 'file', 'echo')
+XARGS_ERR = "xargs builds the command from stdin; run it as a script file or list the files explicitly"
 MANAGERS = ('pnpm', 'npm', 'yarn', 'bun')
 # Manager options that take the next word as their value (`--opt=value` is one word).
 VALUE_FLAGS = ('-C', '-F', '--filter', '--filter-prod', '--dir', '--prefix', '--cwd', '--reporter',
@@ -22,50 +26,21 @@ VALUE_FLAGS = ('-C', '-F', '--filter', '--filter-prod', '--dir', '--prefix', '--
 NPM_WORKSPACE_FLAGS = ('-w', '--workspace')     # value flags for npm only
 
 
-def _is_split_string(name, a):
-    if name != 'env':
-        return False
-    if a.startswith('--'):
-        return a.partition('=')[0] == '--split-string'
-    return 'S' in a[1:]
-
-
 def _skip_wrapper_opts(name, argv, i):
     """Index of the first word after the options of the wrapper whose name is argv[i - 1]."""
-    values = WRAPPERS[name]
-    n = len(argv)
-    while i < n and argv[i].startswith('-') and argv[i] != '-':
-        a = argv[i]
-        i += 1
-        if a == '--':
-            break
-        if _is_split_string(name, a):
-            raise ParseError("env -S payload cannot be inspected")
-        if a.startswith('--'):
-            if a in values:
-                i += 1
-            continue
-        # Short cluster, getopt style: a value letter takes the rest of the word, or the next word.
-        for k in range(1, len(a)):
-            if '-' + a[k] in values:
-                if k == len(a) - 1:
-                    i += 1
-                break
+    i, seen = scan_opts(argv, i, WRAPPERS[name])
+    if name == 'env' and ('-S' in seen or '--split-string' in seen):
+        raise ParseError("env -S payload cannot be inspected")
     for _ in range(POSITIONAL_AFTER.get(name, 0)):
-        if i < n:
+        if i < len(argv):
             i += 1
     return i
 
 
-def strip_env_and_wrappers(argv):
-    """Split leading env assignments and wrappers (sudo, time, env...) and their options
-    from the command: (prefix, rest).
-
-    Raises ParseError when the command cannot be named: `env -S` (a split payload), a
-    variable command word, or options left in front of the command after a wrapper.
-    """
+def _strip(argv):
+    """(index of the command word, xargs is in the wrapper chain)."""
     i = 0
-    wrapped = False
+    xargs = False
     while i < len(argv):
         w = argv[i]
         if _ENV.match(w):
@@ -74,14 +49,35 @@ def strip_env_and_wrappers(argv):
         name = os.path.basename(w)
         if name not in WRAPPERS:
             break
-        wrapped = True
+        xargs = xargs or name == 'xargs'
         i = _skip_wrapper_opts(name, argv, i + 1)
+    return i, xargs
+
+
+def strip_env_and_wrappers(argv):
+    """Split leading env assignments and wrappers (sudo, time, env...) and their options
+    from the command: (prefix, rest).
+
+    Raises ParseError when the command cannot be named: `env -S` (a split payload), a
+    variable command word, options left in front of the command after a wrapper, or an
+    xargs whose command is empty or a shell (it runs text read from stdin).
+    """
+    i, xargs = _strip(argv)
     rest = argv[i:]
+    if xargs and (not rest or os.path.basename(rest[0]) in _SHELLS):
+        raise ParseError(XARGS_ERR)
     if rest and variable_command_word(rest[0]):
         raise ParseError("command word is a variable; write the command literally")
-    if wrapped and rest and rest[0].startswith('-'):
+    if i and rest and rest[0].startswith('-'):
         raise ParseError("wrapper options hide the command word")
     return argv[:i], rest
+
+
+def xargs_writes_command(argv):
+    """True when xargs in the wrapper chain runs a command that is not read-only: fed
+    from a pipe, its input becomes arguments (or the command) that cannot be inspected."""
+    i, xargs = _strip(argv)
+    return xargs and (i >= len(argv) or os.path.basename(argv[i]) not in XARGS_READ_ONLY)
 
 
 def _value_flags(manager):
