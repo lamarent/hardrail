@@ -8,6 +8,7 @@ from core.config import DEFAULTS
 from core.guard import _glob_match, decide
 from test.core.guard_table import ROWS
 
+FX = "test/fixtures/pnpm-monorepo"
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
@@ -114,7 +115,7 @@ class GuardTest(unittest.TestCase):
         self.assertIn("run the package's `test` script with a path", self._msg("pnpm test:watch"))
 
     def test_watch_fix_vitest(self):
-        self.assertTrue(self._msg("vitest src/a.test.ts").endswith("pnpm exec vitest --run src/a.test.ts"))
+        self.assertTrue(self._msg("vitest src/a.test.ts").endswith("run once: vitest --run src/a.test.ts"))
 
     def test_watch_fix_jest(self):
         self.assertTrue(self._msg("jest --watch src/a.test.ts").endswith("jest --watchAll=false src/a.test.ts"))
@@ -127,6 +128,24 @@ class GuardTest(unittest.TestCase):
     def test_chained_gated_names_gated_part(self):
         self.assertIn("run `git push origin main` as its own call",
                       self._msg("git status && git push origin main"))
+
+    def test_related_fix_keeps_subcommand(self):
+        self.assertIn('vitest related --run src/a.ts', decide('vitest related src/a.ts', '/tmp', DEFAULTS).message)
+
+    def test_jest_fix_is_jest(self):
+        m = decide('npx jest', '/tmp', DEFAULTS).message
+        self.assertIn('npx jest', m)
+        self.assertNotIn('vitest', m)
+
+    def test_fix_honours_defaults_test(self):
+        cfg = copy.deepcopy(DEFAULTS)
+        cfg['defaults']['test'] = 'npx jest'
+        self.assertIn('npx jest <path', decide('npm test', '/tmp', cfg).message)
+
+    def test_all_fix_non_pnpm_base(self):
+        cfg = copy.deepcopy(DEFAULTS)
+        cfg['defaults']['test'] = 'npx vitest run'
+        self.assertNotIn('--filter <name> exec', decide('pnpm -r test', FX, cfg).message)
 
     def test_message_on_single_line(self):
         for command, *_ in ROWS:

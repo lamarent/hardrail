@@ -19,6 +19,12 @@ _RUN_FLAGS = ('--run', 'run', '--watch=false', '--no-watch')
 _WATCH_FLAGS = ('--watch', '--watchAll')
 _E2E_WATCH = ('--ui', '--watch', '--debug')
 _PLACEHOLDER = '<path/to/file.test.ts>'
+# Runner options whose next word is a value, not a test path.
+_RUNNER_VALUE_FLAGS = ('--config', '-c', '--root', '-r', '--dir', '--project', '--reporter', '--outputFile',
+                       '--coverage.reporter', '-t', '--testNamePattern', '--rootDir', '--maxWorkers', '-w',
+                       '--selectProjects', '--shard', '--pool')
+_JEST_PATH_FLAGS = ('--testPathPattern', '--testPathPatterns')  # their value is a path
+_VITEST_SUBCMDS = ('related', 'bench', 'list')
 
 
 class Decision:
@@ -123,7 +129,9 @@ def _runner(argv, config):
             rest = skip_manager_opts(rest[2:]) or ['']
         elif base == 'yarn' and rest[:2] == ['workspaces', 'foreach']:
             rest = skip_manager_opts(rest[2:]) or ['']
-        if rest[0] == 'run' and len(rest) > 1:
+        if base == 'npm' and rest[0] in ('t', 'tst'):
+            rest = ['test'] + rest[1:]
+        if rest[0] in ('run', 'run-script') and len(rest) > 1:
             rest = rest[1:]
         if _is_script(rest[0]):
             return rest[0], rest[1:]
@@ -137,15 +145,46 @@ def _runner(argv, config):
     return None
 
 
-def _has_path(args):
-    return any(not a.startswith('-') and ('/' in a or _PATH_ARG.search(a)) for a in args)
+def _paths(args, cwd):
+    """The words in runner/script args that name a test path: not flags, not flag values,
+    and either path-shaped, a jest path-pattern value, or an existing file/dir under cwd."""
+    out = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        i += 1
+        if a.startswith('-'):
+            name, eq, val = a.partition('=')
+            if name in _JEST_PATH_FLAGS:
+                if not eq and i < len(args):
+                    val, i = args[i], i + 1
+                if val:
+                    out.append(val)
+            elif a in _RUNNER_VALUE_FLAGS:
+                i += 1
+            continue
+        if '/' in a or _PATH_ARG.search(a) or os.path.exists(os.path.join(cwd, a)):
+            out.append(a)
+    return out
 
 
-def _first_path(args):
-    for a in args:
-        if not a.startswith('-') and ('/' in a or _PATH_ARG.search(a)):
-            return a
-    return None
+def _first_path(args, cwd):
+    return next(iter(_paths(args, cwd)), _PLACEHOLDER)
+
+
+def _fix_cmd(argv, name, args, path, config):
+    """The scoped one-shot command: the runner as invoked, or the configured test command."""
+    if name not in _RUNNERS:
+        return f"{config['defaults']['test']} {path}"
+    k = next(i for i, a in enumerate(argv) if os.path.basename(a) == name)
+    out = argv[:k + 1]
+    if name == 'vitest':
+        if args and args[0] in _VITEST_SUBCMDS:
+            out.append(args[0])
+        out.append('--run')
+    elif _explicit_watch(args):
+        out.append('--watchAll=false')
+    return ' '.join(out + [path])
 
 
 def _result(action, rule, msg, config):
@@ -230,7 +269,7 @@ def _without(argv, drop):
     return [a for a in argv if a not in drop and a.partition('=')[0] not in drop]
 
 
-def _watch_fix(s, config):
+def _watch_fix(s, config, cwd):
     """The one-shot command for a watch-mode simple, or None when it does not watch."""
     env, argv = strip_env_and_wrappers(s.argv)
     if any(e.startswith('CI=') for e in env) and not _explicit_watch(argv):
@@ -247,58 +286,53 @@ def _watch_fix(s, config):
         return None
     name, args = hit
     explicit = _explicit_watch(args)
-    path = _first_path(args) or _PLACEHOLDER
+    fix = _fix_cmd(argv, name, args, _first_path(args, cwd), config)
     if name == 'jest':
-        if not explicit:
-            return None
-        k = next(i for i, a in enumerate(argv) if os.path.basename(a) == 'jest')
-        rest = [a for a in _without(argv[k + 1:], _WATCH_FLAGS) if a != '--']
-        return "run once: " + ' '.join(argv[:k + 1] + ['--watchAll=false'] + rest)
+        return "run once: " + fix if explicit else None
     if name == 'vitest':
         if not explicit and any(a in _RUN_FLAGS for a in args):
             return None
-        return f"run once: {config['defaults']['test']} {path}"
+        return "run once: " + fix
     if name.startswith('test:') and name.endswith('watch'):
-        return f"run the package's `test` script with a path: {config['defaults']['test']} {path}"
+        return "run the package's `test` script with a path: " + fix
     if explicit:
-        return f"drop --watch and run once: {config['defaults']['test']} {path}"
+        return "drop --watch and run once: " + fix
     return None
 
 
 def rule_watch_mode(simples, config, cwd="."):
     for s in simples:
-        fix = _watch_fix(s, config)
+        fix = _watch_fix(s, config, cwd)
         if fix:
             return _result("block", "watch_mode", f"watch mode never exits; {fix}", config)
     return None
-
-
-def _own_path_token(script):
-    return any('/' in t or _PATH_ARG.search(t) for t in script.split() if not t.startswith('-'))
 
 
 def _unscoped_decision(s, prev, name, args,
                        config, cwd):
     if '--help' in args:
         return None
+    argv = strip_env_and_wrappers(s.argv)[1]
     root = find_root(cwd) or cwd
     pkg = resolve_package(s, cwd, config, root, prev=prev)
     base = config['defaults']['test']
+    path = _first_path(args, cwd)
     if pkg == "all":
-        fix = f"{base.replace('exec', '--filter <name> exec', 1)} {_first_path(args) or _PLACEHOLDER}"
+        cmd = ('pnpm --filter <name> ' + base[5:]) if base.startswith('pnpm ') else base
         return _result("block", "unscoped_test",
-                       f"this runs every workspace package; target one package: {fix}", config)
+                       f"this runs every workspace package; target one package: {cmd} {path}", config)
     if isinstance(pkg, Package) and name not in _RUNNERS and pkg.test_script \
-            and _own_path_token(pkg.test_script):
+            and _paths(pkg.test_script.split(), pkg.root):
         rel = os.path.relpath(pkg.root, os.path.abspath(cwd))
-        path = _first_path(args) or _PLACEHOLDER
-        fix = f"pnpm exec vitest --run {path}" if rel == '.' else f"pnpm -C {rel} exec vitest --run {path}"
+        fix = _fix_cmd(argv, name, args, path, config)
+        if rel != '.':
+            fix = f"pnpm -C {rel} {fix[5:]}" if base.startswith('pnpm ') else f"(in {rel}) {fix}"
         return _result("block", "unscoped_test",
                        f"the package test script already has a path, so extra paths do not scope it; use: {fix}",
                        config)
-    if _has_path(args):
+    if path != _PLACEHOLDER:
         return None
-    fix = f"{base} {_first_path(args) or _PLACEHOLDER}"
+    fix = _fix_cmd(argv, name, args, path, config)
     return _result("block", "unscoped_test", f"unscoped test run; scope it: {fix}", config)
 
 
