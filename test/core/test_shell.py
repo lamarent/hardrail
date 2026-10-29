@@ -34,7 +34,7 @@ class SplitTests(unittest.TestCase):
         self.assertEqual(self.argvs('cat <<EOF\npnpm test\nEOF'), [['cat']])
 
     def test_find_exec_semicolon(self):
-        self.assertEqual(len(split_commands('find . -name "*.orig" -exec rm {} \;')), 1)
+        self.assertEqual(len(split_commands('find . -name "*.orig" -exec rm {} \\;')), 1)
 
     def test_docker_sh_c_payload_separate(self):
         s = split_commands('docker run --rm alpine sh -c "ls; pwd"')
