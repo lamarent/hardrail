@@ -37,7 +37,7 @@ ROWS = [
     ("pnpm test:watch", "block", "watch_mode"),
     ("docker compose logs -f api", "block", "watch_mode"),
     ("docker compose logs --follow api", "block", "watch_mode"),
-    ("docker compose logs --tail=100 api", "warn", "heavy"),  # word-prefix heavy match
+    ("docker compose logs --tail=100 api", "allow", ""),
     ("playwright test --ui", "block", "watch_mode"),
     ("pnpm test:e2e --debug", "block", "watch_mode"),
     # chained gated actions
@@ -342,7 +342,7 @@ ROWS = [
     ("tail -fn 20 app.log", "block", "watch_mode"),
     ("tail --follow=name app.log", "block", "watch_mode"),
     ("podman logs -f api", "block", "watch_mode"),
-    ("docker compose logs api", "warn", "heavy"),
+    ("docker compose logs api", "allow", ""),
     ("git push origin :", "allow", ""),
     ("git push origin :main", "block", "force_push"),
     ("git push --delete origin main", "block", "force_push"),

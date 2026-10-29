@@ -19,7 +19,7 @@ DEFAULTS = {
         ],
     },
     "heavy": ["build", "build:*", "turbo build", "vite build", "generate:*", "prisma", "prisma *",
-              "playwright", "playwright *", "docker compose logs"],
+              "playwright", "playwright *"],
     "worktree": {"required": False, "dir": ".worktrees", "include": []},
 }
 
