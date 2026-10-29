@@ -35,6 +35,7 @@ same report on the adopter's own transcripts.
 4. Each rule is enforced at the lowest tier that actually holds: prose → hook → CI.
 5. `init` never modifies a file the repo already had.
 6. Every claim in the README is backed by a test in this repo or a command the reader runs.
+7. The core knows no agent. Claude Code is the first adapter, not the design.
 
 ## Non-goals
 
@@ -84,6 +85,20 @@ prompts teammates to install is verified during the build; if it does not, teamm
 Existing `.claude/settings.json`: `init` prints the `hooks` snippet and does not edit the
 file. `init --check` (also the CI self-check) fails until the hooks are registered, so an
 inactive guard cannot persist silently.
+
+## Core and adapters
+
+| Layer | Contents | Agent-specific |
+|---|---|---|
+| Core | `hardrail.config.json`; guard decision `decide(command, cwd, config) → allow \| warn \| block + message`; source → test mapping; CI workflow; convention check; rule **content**; metrics schema | no |
+| Adapter `claude` (v1) | registers hooks in `.claude/settings.json`; reads Claude's stdin JSON; exit 2 + stderr; renders rules into `.claude/rules/`, skills into `.claude/skills/`; reads `~/.claude/projects` transcripts | yes |
+| Adapter `codex` (later) | renders rules into `AGENTS.md`; plugs `decide` into Codex's pre-command hook if one exists (to verify at build time), otherwise pre-commit only; reads Codex session logs | yes |
+| Adapter `none` | guard as git `pre-commit`; rules as `AGENTS.md`; CI unchanged | no |
+
+Each adapter is a thin shim (target ≤ 30 lines) that translates input and output; it
+holds no policy. The 40-command guard table and the mapping matrix test the core, so a
+new adapter adds no guard tests. `hardrail init --adapter claude` selects the shim;
+`init` detects the agent from the repo (`.claude/`, `AGENTS.md`, `.codex/`) and proposes.
 
 ## The parts
 
@@ -241,7 +256,8 @@ third tier.
 hardrail/
   .claude-plugin/plugin.json      # name: hardrail
   bin/hardrail                    # init | check | upgrade | render | ci | metrics (Node, no deps)
-  hooks/                          # python3 sources copied into adopters
+  core/                           # decide(), mapping, render, metrics schema (python3 stdlib)
+  adapters/claude/ adapters/none/ # thin shims copied into adopters
   templates/rules/ templates/skills/ templates/agents/ templates/workflows/
   modules/<name>/                 # optional modules
   schema/hardrail.config.schema.json
