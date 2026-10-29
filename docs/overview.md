@@ -4,7 +4,7 @@ Legend: items marked (planned) are not shipped yet; everything else ships in thi
 
 ```
                  hardrail repo (public)
-                 ├── core/      decide() ← a table test of 180+ rows · mapping, render, metrics (planned)
+                 ├── core/      decide() ← a table test of 393 rows · mapping, render, metrics (planned)
                  ├── adapters/  claude/ · none/, codex/ (planned)      ≤30-line shims
                  ├── templates/ rules · skills · agents · workflows      (planned)
                  └── bin/hardrail  init | check | upgrade | render | ci | metrics   (planned)
@@ -24,11 +24,12 @@ Legend: items marked (planned) are not shipped yet; everything else ships in thi
  ┌─ 2. RUN (per session, shipped) ──────────────────────────────────────────────┐
  │  prompt ──► Claude Code ──► Bash tool call                                   │
  │                │                 │ PreToolUse                                │
- │   rules/ (prose tier)      pre-bash.sh  fast path: no gated keyword → exit 0 │
+ │   rules/ (prose tier)      pre-bash.sh  fast path: no keyword, quote or $ →  │
+ │                                 │ exit 0                                     │
  │   skills/ on description        │ else python3 -I -S pre_bash.py             │
  │                                 ▼                                            │
  │                        core.decide(cmd, cwd, config)                         │
- │                        unparsable → force_push → chained → watch →           │
+ │                        unparsable → force_push → xargs → chained → watch →   │
  │                        unscoped_test → heavy                                 │
  │                                 │                                            │
  │              allow: exit 0      warn: stderr WARN, exit 0                    │

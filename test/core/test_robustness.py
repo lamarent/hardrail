@@ -10,7 +10,10 @@ from core.guard import Decision, decide
 FRAGMENTS = [
     "git push -f", "pnpm test", "$(", "`", "<<EOF", "'", '"', "|", "&&", "\n",
     "$'x'", "env -i", "{", ")", "#", "héllo", "テスト", "\x00",
+    "sudo -i", "xargs", "<<<", "<(", "bash -c", "| bash", "source", "eval", "-C", "--filter",
+    "pnpm exec", "find . -exec",
 ]
+CATCH_ALL = "guard could not evaluate"
 CASES = 300
 CASE_BUDGET = 0.5
 
@@ -30,6 +33,7 @@ class RobustnessTest(unittest.TestCase):
             elapsed = time.perf_counter() - start
             self.assertIsInstance(d, Decision, where)
             self.assertIn(d.action, {"allow", "warn", "block"}, where)
+            self.assertFalse(d.message.startswith(CATCH_ALL), f"{where} -> {d.message}")
             self.assertLess(elapsed, CASE_BUDGET, where)
 
 

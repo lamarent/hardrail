@@ -23,7 +23,11 @@ notes): [`docs/reference.md`](docs/reference.md).
 
 ## What it blocks
 
-The first rule that fires decides. Every block message ends with the command to run instead.
+Rules run in this order; the first that fires decides: a command the tokenizer cannot
+split (`unparsable`), `force_push`, `xargs` fed by a pipe (`unparsable`), `chained_gated`,
+`watch_mode`, `unscoped_test`, `heavy`. A later rule that cannot read a command stops
+there with `unparsable`. So `ls | xargs git push -f` reports `force_push`. Every block
+message ends with the command to run instead.
 
 | Rule | Example that blocks | The agent is told to |
 |---|---|---|
@@ -47,8 +51,13 @@ examples are in the [verdict table](docs/reference.md#verdict-table).
 
 Known gaps, by design:
 
-- Script files are not inspected: `bash script.sh`, or a file written in one call and run
-  in the next.
+- Script files are not inspected: `bash script.sh`, or a file written and then run, in the
+  same call (`echo … > x.sh; sh x.sh`) or in the next.
+- `source` / `.` of a file on disk is not read: `source ./env.sh` runs whatever the file
+  holds. Stdin, a here-string and `<(…)` are inspected or blocked.
+- `git -c` aliases and push config are not interpreted: `git -c alias.p='push -f' p`,
+  `git -c remote.origin.push=+refs/heads/main:refs/heads/main push`.
+- Git long-option prefixes are not expanded: `git push --delet`, `git push --mirro`.
 - `xargs` fed from a file is not inspected: `xargs -a files.txt rm`, `xargs rm < files.txt`.
 - Text run by another interpreter is not inspected: `python3 -c 'os.system(stdin)'` with
   a piped command. `| xargs sh -c {}` is blocked as `unparsable`.
@@ -127,12 +136,12 @@ from `docs/overview.md`:
  ┌─ 2. RUN (per session) ───────────────────────────────────────────────────────┐
  │  prompt ──► agent ──► Bash tool call                                         │
  │                           │ PreToolUse                                       │
- │                      pre-bash.sh  fast path: no gated keyword → exit 0       │
+ │                      pre-bash.sh  fast path: no keyword, quote or $ → exit 0 │
  │                           │ else python3 -I -S pre_bash.py                   │
  │                           ▼                                                  │
  │                  core.decide(cmd, cwd, config)                               │
- │                  unparsable → force_push → chained_gated → watch_mode →      │
- │                  unscoped_test → heavy                                       │
+ │                  unparsable → force_push → xargs stdin → chained_gated →     │
+ │                  watch_mode → unscoped_test → heavy                          │
  │                           │                                                  │
  │        allow: exit 0      warn: stderr WARN, exit 0                          │
  │        block: stderr "BLOCKED [rule]: <what to run instead>", exit 2         │
@@ -151,13 +160,14 @@ from `docs/overview.md`:
 
 Only box 2 exists today. One Bash call goes through:
 
-1. **bash pre-filter** — a keyword `case` on the command text; no gated keyword → exit 0
-   without starting python.
+1. **bash pre-filter** — a keyword `case` on the command text; no gated keyword, no quote,
+   backslash, `$`, backtick, `<(` or shell name → exit 0 without starting python.
 2. **python shim** (30 lines or fewer) — reads the JSON, finds the nearest
    `hardrail.config.json`, calls `decide`, maps the verdict to an exit code.
 3. **tokenizer** — splits on `;`, `&&`, `||`, `|`, `&`, newlines; quote- and
    comment-aware; parses anything another shell would run (`sh -c`, `eval`, heredocs fed
-   to a shell, `$(…)`, backticks, `<(…)`) as its own chain.
+   to a shell, `source /dev/stdin`, `$(…)`, backticks, `<(…)`, `watch`, `ssh <host>`,
+   `parallel`, `flock -c`, `script -c`) as its own chain.
 4. **rules**, in the order above; first hit wins.
 5. **package resolution** for `unscoped_test` (see [Monorepos](#monorepos)).
 

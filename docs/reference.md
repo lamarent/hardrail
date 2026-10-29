@@ -20,7 +20,8 @@ file in this repository; the file is named in each section.
 
 1. **bash pre-filter** (`adapters/claude/pre-bash.sh`). Reads the hook's JSON from stdin,
    takes everything after the first `"command":` key and runs a keyword `case` on it. No
-   gated keyword → `exit 0` without starting python. The keyword list must cover the first
+   gated keyword, and no quote, backslash, `$`, backtick, `<(` or shell name (any of them can
+   hide a keyword: `pu''sh`, `$cmd`) → `exit 0` without starting python. The keyword list must cover the first
    word of every gated and heavy entry; a test checks it against the defaults.
 2. **python shim** (`adapters/claude/pre_bash.py`, 30 lines or fewer). Parses the JSON, finds
    the nearest `hardrail.config.json` above `cwd`, calls `decide`, maps the decision to an
@@ -28,8 +29,10 @@ file in this repository; the file is named in each section.
 3. **tokenizer** (`core/shell.py`). Splits the command on `;`, `&&`, `||`, `|`, `&` and
    newlines, quote- and comment-aware. Text that another shell would execute is parsed as
    its own chain ("payload"): `sh -c "…"`, `eval …`, a heredoc or here-string fed to
-   `bash`/`sh`/`zsh`/`dash` (directly or through a pipe), `$(…)`, backticks, and process
-   substitution `<(…)` / `>(…)`.
+   `bash`/`sh`/`zsh`/`dash` (directly or through a pipe), `source` / `.` of stdin (`-`,
+   `/dev/stdin`, a here-string), `builtin eval` / `command eval`, `$(…)`, backticks,
+   process substitution `<(…)` / `>(…)`, and the text a command runner hands to a shell:
+   `watch …`, `ssh <host> …`, `parallel … ::: …`, `flock -c …`, `script -c …`.
 4. **rules** (`core/guard.py`), in a fixed order; the first hit wins.
 5. **package resolution** (`core/packages.py`) for the test-scoping rule, see
    [Monorepo resolution](#monorepo-resolution).
@@ -56,12 +59,23 @@ Exactly as the code does it:
 
 ## Rules
 
-Order matters: the first rule that fires decides.
+Order, as `decide` runs it; the first that fires decides:
+
+1. the tokenizer cannot split the command → `unparsable`;
+2. `force_push`;
+3. `xargs` fed by a pipe runs a command that is not read-only → `unparsable`;
+4. `chained_gated`;
+5. `watch_mode`;
+6. `unscoped_test`;
+7. `heavy`.
+
+A rule that cannot read a command (an unmodelled wrapper option, an expanded `git push`
+argument) stops there with `unparsable`. So `ls | xargs git push -f` reports `force_push`.
 
 | Rule | What it catches | Blocks, for example | The message tells the agent to |
 |---|---|---|---|
 | `unparsable` | a command the tokenizer cannot split safely; an oversized shell payload; `xargs` fed by a pipe that runs a command which is not read-only | `pnpm test "oops`, `ls \| xargs rm` | split it or quote it plainly / write the command literally / run it as a script file / list the files explicitly; the message names the construct |
-| `force_push` | `git push` with `--force`, `-f` or `-d` in a short-flag cluster, `--mirror`, `--delete`, a `+refspec` or a `:branch` refspec; `git` found by basename, git globals (`-C`, `-c`, `--git-dir`, …) skipped | `/usr/bin/git push --force origin main` | use `git push --force-with-lease` / ask before deleting remote refs |
+| `force_push` | `git push` with `--force`, `-f` or `-d` in a short-flag cluster, `--mirror`, `--delete`, a `+refspec` or a `:branch` refspec; `git` found by basename, git globals (`-C`, `-c`, `--git-dir`, …) skipped; also the command `npx`, `bunx`, `<manager> exec\|dlx\|x` or `find -exec\|-execdir\|-ok\|-okdir` runs. A `git push` argument built from `$(…)` or a `$` expansion → `unparsable` (write the refspec literally) | `/usr/bin/git push --force origin main` | use `git push --force-with-lease` / ask before deleting remote refs |
 | `chained_gated` | two or more commands in one call where any of them starts with a `guard.gatedActions` prefix; a gated action inside a payload counts when the whole command has more than one command | `git commit -m x && git push` | run `` `git commit -m x` `` as its own call |
 | `watch_mode` | bare `vitest` without `--run`; `jest --watch`/`--watchAll`; an explicit `--watch` on a test script; `test:watch`; `docker compose logs -f`; `docker logs -f`; `tail -f`; `playwright`/`test:e2e` with `--ui`, `--watch` or `--debug` | `docker compose logs -f api` | `use docker compose logs --tail=200 api` (each case gets its own one-shot form) |
 | `unscoped_test` | a test runner invocation whose own arguments carry no path, or one that spans every workspace package | `pnpm test` | `pnpm exec vitest --run <path/to/file.test.ts>` |
@@ -78,7 +92,11 @@ Fixed edge cases (each blocks unless noted):
 - `<command> | bash`: literal `echo`/`printf` arguments are parsed as the payload, and a
   `cat` heredoc body is parsed as the payload; anything else piped into a shell, including
   `curl … | sh` and `echo $(…) | bash`, → `unparsable`.
-- A shell reading a process substitution (`bash <(…)`, `bash < <(…)`) → `unparsable`.
+- A shell reading a process substitution (`bash <(…)`, `bash < <(…)`, `source <(…)`,
+  `. <(…)`) → `unparsable`.
+- `watch`, `ssh`, `parallel`, `flock`, `script`, `caffeinate` and `unbuffer` with an
+  option the guard does not model → `unparsable`; `parallel` with no command before `:::`
+  (commands read from its input) → `unparsable`.
 - A gated action inside a payload counts as chained whenever the whole command has more
   than one command; `bash -c "git commit -m x"` alone blocks, and the message says to run
   the inner command directly.
@@ -91,11 +109,12 @@ Fixed edge cases (each blocks unless noted):
 ## Runner detection
 
 Runner detection covers `pnpm`/`npm`/`yarn`/`bun` scripts named `test` or `test:*`,
-`run test`, `exec`/`dlx`/`npx`/`bunx` followed by `vitest` or `jest`, direct
-`vitest`/`jest` binaries, `turbo run test`, `nx test`, `yarn workspace <name> test`,
+`run test` (manager options after `run` skipped: `pnpm run -r test`), `exec`/`dlx`/`npx`/`bunx`
+followed by `vitest` or `jest`, direct `vitest`/`jest` binaries, `turbo run test`, `turbo test`,
+`nx test`, `nx run-many -t|--target[=]` with `test` among the targets, `yarn workspace <name> test`,
 `yarn workspaces foreach`, the configured `defaults.test` command, and all of these behind
 env-var prefixes (`CI=1 …`) or wrappers (`sudo`, `time`, `env`, `nohup`, `command`,
-`exec`, `corepack`).
+`exec`, `corepack`, `flock`, `unbuffer`, `caffeinate`, `script`).
 
 ## Verdict table
 
