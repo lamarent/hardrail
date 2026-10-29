@@ -1,5 +1,7 @@
 import copy
 import os
+import shutil
+import tempfile
 import unittest
 
 from core.config import DEFAULTS
@@ -12,6 +14,39 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 class GuardTest(unittest.TestCase):
     def setUp(self):
         self.config = copy.deepcopy(DEFAULTS)
+
+    def _tmpdir(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        return d
+
+    def test_bad_config_test_command_is_unparsable(self):
+        self.config['defaults']['test'] = "pnpm exec 'vitest"
+        d = decide('ls', '/tmp', self.config)
+        self.assertEqual((d.action, d.rule), ('block', 'unparsable'))
+
+    def test_non_utf8_workspace_yaml(self):
+        tmp = self._tmpdir()
+        with open(os.path.join(tmp, 'pnpm-workspace.yaml'), 'wb') as f:
+            f.write(b'\xff\xfe')
+        d = decide('pnpm --filter a test src/a.test.ts', tmp, self.config)
+        self.assertEqual(d.action, 'block')
+        self.assertNotEqual(d.rule, 'unparsable', d.message)
+
+    def test_deep_package_json(self):
+        tmp = self._tmpdir()
+        with open(os.path.join(tmp, 'package.json'), 'w') as f:
+            f.write('[' * 100000)
+        d = decide('pnpm test src/a.test.ts', tmp, self.config)
+        self.assertIn(d.action, ('allow', 'block'))
+        self.assertNotEqual(d.rule, 'unparsable', d.message)
+
+    def test_chained_message_names_inner_command(self):
+        self.assertIn('git commit -m x', decide('bash -c "git commit -m x"', '/tmp', self.config).message)
+
+    def test_wrapper_variable_message_says_why(self):
+        d = decide('sudo $x push -f', '/tmp', self.config)
+        self.assertIn('command word is a variable', d.message)
 
     def test_table_size(self):
         self.assertGreaterEqual(len(ROWS), 40)

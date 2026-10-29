@@ -112,9 +112,9 @@ def _runner(argv, config):
     if hit:
         return hit
     if base in ('npx', 'bunx'):
-        return _direct(_skip_opts(argv[1:]))
+        return _direct(_skip_opts(argv[1:], base))
     if base in _PKG_MANAGERS:
-        rest = _skip_opts(argv[1:])
+        rest = _skip_opts(argv[1:], base)
         if not rest:
             return None
         hit = _direct(_skip_opts(rest[1:]) if rest[0] in ('exec', 'dlx') else rest)
@@ -171,11 +171,20 @@ def rule_force_push(simples, config, cwd="."):
     return None
 
 
+def _gated_forms(c):
+    """The command as written, and with manager options / run / exec / dlx dropped:
+    `pnpm --filter x add zod` -> also `pnpm add zod` and `add zod`."""
+    if not c:
+        return [c]
+    form = _heavy_form(c).split()
+    return [c, [c[0]] + form, form]
+
+
 def _is_gated(s, config):
-    c = _cmd(s)  # argv[0] compared by basename
+    forms = _gated_forms(_cmd(s))  # argv[0] compared by basename
     for prefix in config["guard"]["gatedActions"]:
         p = prefix.split()
-        if p and c[:len(p)] == p:
+        if p and any(f[:len(p)] == p for f in forms):
             return True
     return False
 
@@ -191,6 +200,12 @@ def rule_chained_gated(simples, config, cwd="."):
         if gated is not None:
             return _result("block", "chained_gated",
                            f"gated action chained with other commands; run `{gated.raw}` as its own call",
+                           config)
+    if len(simples) > 1:
+        gated = next((s for s in simples if s.payload_of and _is_gated(s, config)), None)
+        if gated is not None:
+            return _result("block", "chained_gated",
+                           f"gated action inside a shell payload; run `{gated.raw}` directly as its own call",
                            config)
     return None
 
@@ -293,7 +308,7 @@ def rule_unscoped_test(simples, config, cwd="."):
 
 def _heavy_form(argv):
     if argv and os.path.basename(argv[0]) in _PKG_MANAGERS + ('npx', 'bunx'):
-        argv = _skip_opts(argv[1:])
+        argv = _skip_opts(argv[1:], os.path.basename(argv[0]))
         if argv[:1] in (['run'], ['exec'], ['dlx']):
             argv = argv[1:]
     return ' '.join(argv)
@@ -319,8 +334,15 @@ def decide(command, cwd, config):
         return _unparsable(config, str(e) if str(e).startswith("payload too") else None)
     except RecursionError:
         return _unparsable(config, "payload too deep to inspect; run it as a script file")
-    for rule in RULES:
-        d = rule(simples, config, cwd)
-        if d:
-            return d
+    except Exception as e:  # never let a parser bug let the command through
+        return _unparsable(config, "guard could not evaluate the command (%s)" % type(e).__name__)
+    try:
+        for rule in RULES:
+            d = rule(simples, config, cwd)
+            if d:
+                return d
+    except ParseError as e:
+        return _unparsable(config, str(e))
+    except Exception as e:
+        return _unparsable(config, "guard could not evaluate the command (%s)" % type(e).__name__)
     return ALLOW

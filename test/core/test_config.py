@@ -19,6 +19,11 @@ def fixture_root(name):
 
 
 class ConfigTest(unittest.TestCase):
+    def test_defaults_gate_install_aliases(self):
+        gated = config.DEFAULTS["guard"]["gatedActions"]
+        self.assertIn("npm ci", gated)
+        self.assertIn("pnpm i", gated)
+
     def test_minimal_gets_defaults(self):
         cfg = config.load(fixture_root("minimal.json"))
         self.assertEqual(cfg["guard"]["mode"], "block")

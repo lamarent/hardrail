@@ -5,13 +5,11 @@ import json
 import os
 import re
 
-from core.argv import strip_env_and_wrappers
+from core.argv import manager_flags, strip_env_and_wrappers
 from core.shell import Simple
 
-_MANAGERS = ('pnpm', 'npm', 'yarn', 'bun')
 _ALL_FLAGS = ('-r', '--recursive', '--parallel')
 _ROOT_FLAGS = ('-w', '--workspace-root')
-_LONG_VALUE = ('--dir', '--filter', '--filter-prod', '--prefix', '--cwd')
 _DIR_FLAGS = ('-C', '--dir')
 _FILTER_FLAGS = ('--filter', '-F', '--filter-prod')
 _SELECTOR = ('*', '...', '[')
@@ -43,7 +41,7 @@ def _read_json(path):
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
     return data if isinstance(data, dict) else None
 
@@ -82,7 +80,7 @@ def _workspace_globs(repo_root):
     try:
         with open(os.path.join(repo_root, "pnpm-workspace.yaml"), encoding="utf-8") as f:
             lines = f.read().splitlines()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         lines = []
     inside = False
     for line in lines:
@@ -108,40 +106,6 @@ def _by_name(name, repo_root):
             if pkg and pkg.name == name:
                 return pkg
     return None
-
-
-def _parse_flags(argv):
-    """(flag, value) pairs between the package manager and its subcommand.
-
-    Handles `--flag value`, `--flag=value`, `-C=value`, and short clusters (`-rF value`).
-    """
-    argv = strip_env_and_wrappers(argv)[1]
-    if not argv or os.path.basename(argv[0]) not in _MANAGERS:
-        return []
-    out = []
-    i = 1
-    while i < len(argv) and argv[i].startswith('-') and argv[i] != '-':
-        t = argv[i]
-        nxt = argv[i + 1] if i + 1 < len(argv) else ""
-        if t.startswith('--'):
-            name, eq, val = t.partition('=')
-            if name in _LONG_VALUE and not eq:
-                val, i = nxt, i + 1
-            out.append((name, val if (eq or name in _LONG_VALUE) else None))
-        elif '=' in t:
-            name, _, val = t.partition('=')
-            out.append((name, val))
-        else:
-            for k, letter in enumerate(t[1:], start=2):
-                if letter in 'FC':
-                    rest = t[k:]
-                    if not rest:
-                        rest, i = nxt, i + 1
-                    out.append(('-' + letter, rest))
-                    break
-                out.append(('-' + letter, None))
-        i += 1
-    return out
 
 
 def _filter_package(flt, repo_root):
@@ -193,7 +157,7 @@ def resolve_package(simple, cwd, config, repo_root,
     inside = _within(base, repo_root)
     target = None
     filters = []
-    for flag, value in _parse_flags(simple.argv):
+    for flag, value in manager_flags(simple.argv):
         if flag in _ALL_FLAGS:
             return "all"
         if flag in _ROOT_FLAGS:

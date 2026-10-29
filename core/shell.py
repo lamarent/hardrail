@@ -340,14 +340,15 @@ def _shell_scan(argv, j):
 def _payload_of(argv):
     """Return (text, kind) for the first sh -c / eval payload in argv, else None.
 
-    A command word built from a variable (`$cmd`, `"$@"`, `g${x}`) raises ParseError;
-    a path with a variable prefix (`$HOME/bin/tool`) is allowed.
+    A command word built from a variable (`$cmd`, `"$@"`, `g${x}`, `/usr/bin/$g`) raises
+    ParseError; a path whose last segment is literal (`$HOME/bin/tool`) is allowed.
+    `su -c <text>` and `sudo -s|-i <words>` run their text through a shell: 'sh -c'.
     """
     argv = _clean(argv)
     k = 0
     while k < len(argv) and _ASSIGN.match(argv[k]):
         k += 1
-    if k < len(argv) and '$' in argv[k] and '/' not in argv[k]:
+    if k < len(argv) and variable_command_word(argv[k]):
         raise ParseError("command word is a variable; write the command literally")
     if argv and argv[0] == 'eval' and len(argv) > 1:
         return ' '.join(argv[1:]), 'eval'
@@ -362,7 +363,64 @@ def _payload_of(argv):
             r = _shell_scan(argv, j)
             if r and r[0] == 'c':
                 return argv[r[1]], 'sh -c'
+    for j, w in enumerate(argv):
+        name = os.path.basename(w)
+        text = _su_command(argv[j + 1:]) if name == 'su' else \
+            _sudo_shell_command(argv[j + 1:]) if name == 'sudo' else None
+        if text is not None:
+            _check_size(text)
+            return text, 'sh -c'
     return None
+
+
+def variable_command_word(word):
+    """True when the command a word names comes from a variable: `$x`, `g${x}`,
+    `$d/$g`, `/usr/bin/$g`. A literal last path segment (`$HOME/bin/tool`) is a name."""
+    if '$' not in word:
+        return False
+    last = word.rsplit('/', 1)[-1]
+    return not last or any(ch in last for ch in '${}')
+
+
+_SU_VALUE_LETTERS = 'sgGw'
+
+
+def _su_command(rest):
+    """The text of `su ... -c <text>` / `--command[=]<text>`, else None."""
+    k = 0
+    while k < len(rest):
+        w = rest[k]
+        k += 1
+        if w in ('--command', '--session-command'):
+            return rest[k] if k < len(rest) else None
+        if w.startswith(('--command=', '--session-command=')):
+            return w.partition('=')[2]
+        if len(w) < 2 or w[0] != '-' or w[1] == '-':
+            continue
+        for m in range(1, len(w)):
+            if w[m] == 'c':
+                if m < len(w) - 1:
+                    return w[m + 1:]
+                return rest[k] if k < len(rest) else None
+            if w[m] in _SU_VALUE_LETTERS:
+                k += 1 if m == len(w) - 1 else 0
+                break
+    return None
+
+
+def _sudo_shell_command(rest):
+    """The words `sudo -s|-i <words>` hands to the shell, joined; else None."""
+    shell = False
+    k = 0
+    while k < len(rest) and rest[k].startswith('-') and rest[k] != '-':
+        w = rest[k]
+        k += 1
+        if w == '--':
+            break
+        if not w.startswith('--') and ('s' in w[1:] or 'i' in w[1:]):
+            shell = True
+        k += 1 if w in _SUDO_VALUE_OPTS else 0
+    return ' '.join(rest[k:]) if shell and k < len(rest) else None
 
 
 def _su_reader(argv):
