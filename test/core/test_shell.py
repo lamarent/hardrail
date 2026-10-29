@@ -57,6 +57,24 @@ class SplitTests(unittest.TestCase):
         s = split_commands("bash -lc 'git push'")
         self.assertEqual(s[-1].argv, ['git', 'push'])
 
+    def test_heredoc_in_comment_not_swallowing(self):
+        self.assertIn(['git', 'push'], self.argvs('# note <<EOF\ngit push'))
+        self.assertIn(['git', 'push'], self.argvs('echo hi # <<EOF\ngit push\nEOF'))
+        self.assertIn(['git', 'push'], self.argvs('echo "<<EOF"\ngit push'))
+
+    def test_raw_preserves_source(self):
+        s = split_commands('git commit -m "a  b" && ls')
+        self.assertEqual(s[0].raw, 'git commit -m "a  b"')
+        self.assertEqual(s[1].raw, 'ls')
+
+    def test_bash_o_pipefail_payload(self):
+        s = split_commands('bash -o pipefail -c "git push"')
+        self.assertEqual(s[-1].argv, ['git', 'push'])
+
+    def test_heredoc_reader_after_sudo(self):
+        s = split_commands('sudo bash <<EOF\ngit push\nEOF')
+        self.assertEqual((s[-1].argv, s[-1].payload_of), (['git', 'push'], 'heredoc'))
+
 
 if __name__ == '__main__':
     unittest.main()
