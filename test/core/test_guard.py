@@ -147,6 +147,15 @@ class GuardTest(unittest.TestCase):
         cfg['defaults']['test'] = 'npx vitest run'
         self.assertNotIn('--filter <name> exec', decide('pnpm -r test', FX, cfg).message)
 
+    def test_list_fix_has_no_list_path(self):
+        m = decide('vitest list', os.path.join(ROOT, 'test/fixtures/subcommand-names'), DEFAULTS).message
+        self.assertIn('vitest list --run <path', m)
+        self.assertNotIn('--run list', m)
+
+    def test_watch_subcommand_fix_drops_it(self):
+        self.assertTrue(decide('vitest watch src/a.test.ts', '/tmp', DEFAULTS).message
+                        .endswith('run once: vitest --run src/a.test.ts'))
+
     def test_message_on_single_line(self):
         for command, *_ in ROWS:
             with self.subTest(command=command):

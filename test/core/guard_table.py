@@ -1,6 +1,7 @@
 """Rows of (command, expected_action, expected_rule[, cwd relative to repo root]) for the guard."""
 
 FX = "test/fixtures/pnpm-monorepo"
+NAMES = "test/fixtures/subcommand-names"  # holds entries named run and list
 
 ROWS = [
     # unscoped test runs
@@ -303,4 +304,21 @@ ROWS = [
     ("pnpm exec vitest --run src", "allow", "", FX + "/packages/api"),
     ("pnpm exec vitest --run auth", "block", "unscoped_test", FX + "/packages/api"),
     ("vitest related src/a.ts", "block", "watch_mode"),
+    # review: dot and vitest subcommands are not scopes
+    ("vitest --run .", "block", "unscoped_test"),
+    ("vitest --run ''", "block", "unscoped_test"),
+    ("vitest --run ..", "block", "unscoped_test", FX + "/packages/api"),
+    ("jest .", "block", "unscoped_test"),
+    ("jest ./", "block", "unscoped_test"),
+    ("jest --testPathPattern=.", "block", "unscoped_test"),
+    ("jest --testPathPattern '.*'", "block", "unscoped_test"),
+    ("pnpm test .", "block", "unscoped_test", FX + "/packages/api"),
+    ("vitest run", "block", "unscoped_test", NAMES),
+    ("pnpm exec vitest run", "block", "unscoped_test", NAMES),
+    ("pnpm test -- run", "block", "unscoped_test", NAMES),
+    ("pnpm test run", "block", "unscoped_test", NAMES),
+    ("vitest --run list", "block", "unscoped_test", NAMES),
+    ("vitest watch src/a.test.ts", "block", "watch_mode"),
+    ("vitest related --run src", "allow", "", FX + "/packages/api"),
+    ("vitest run src", "allow", "", FX + "/packages/api"),
 ]
