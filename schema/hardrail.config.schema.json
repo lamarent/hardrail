@@ -4,6 +4,9 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
+    "$schema": {
+      "type": "string"
+    },
     "defaults": {
       "type": "object",
       "additionalProperties": {
@@ -15,24 +18,11 @@
       "additionalProperties": {
         "type": "object",
         "properties": {
-          "root": {
+          "test": {
             "type": "string"
-          },
-          "testFor": {
-            "oneOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              }
-            ]
           }
         },
-        "additionalProperties": true
+        "additionalProperties": false
       }
     },
     "guard": {

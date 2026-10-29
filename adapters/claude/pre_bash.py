@@ -1,7 +1,5 @@
 """Claude Code PreToolUse shim: stdin JSON -> core.guard.decide -> exit code."""
-import json
-import os
-import sys
+import json, os, sys
 
 # Two layouts: copied (.claude/hardrail/{core/,pre_bash.py}) and repo (adapters/claude/pre_bash.py).
 _here = os.path.dirname(os.path.abspath(__file__))
@@ -17,14 +15,16 @@ try:
     cwd = event.get("cwd") or os.getcwd()
     root = find_root(cwd)
     config = load(root) if root else DEFAULTS
-    if config.get("_load_error"):
-        sys.stderr.write("hardrail: config ignored (%s), using defaults\n" % config["_load_error"])
-    d = decide(event["tool_input"]["command"], cwd, config)
+    for key, fmt in (("_load_error", "config ignored (%s), using defaults"), ("_load_warning", "%s")):
+        if config.get(key):
+            sys.stderr.write("hardrail: %s\n" % (fmt % config[key]))
+    cmd = (event.get("tool_input") or {}).get("command")
+    if not isinstance(cmd, str) or not cmd: sys.exit(0)  # not a command event
+    d = decide(cmd, cwd, config)
 except Exception as e:  # fail open: an internal error must never block the agent
     sys.stderr.write("hardrail: guard error: %s\n" % " ".join(str(e).split())[:200])
     sys.exit(0)
-if d.action == "block":
-    sys.stderr.write("BLOCKED [%s]: %s\n" % (d.rule, d.message))
-    sys.exit(2)
-if d.action == "warn":
-    sys.stderr.write("WARN [%s]: %s\n" % (d.rule, d.message))
+out = {"block": ("BLOCKED", 2), "warn": ("WARN", 0)}.get(d.action)
+if out:
+    sys.stderr.write("%s [%s]: %s\n" % (out[0], d.rule, d.message))
+    sys.exit(out[1])

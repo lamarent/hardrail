@@ -1,17 +1,76 @@
 import copy
 import os
+import shutil
+import tempfile
 import unittest
 
 from core.config import DEFAULTS
 from core.guard import _glob_match, decide
 from test.core.guard_table import ROWS
 
+FX = "test/fixtures/pnpm-monorepo"
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 class GuardTest(unittest.TestCase):
     def setUp(self):
         self.config = copy.deepcopy(DEFAULTS)
+
+    def _tmpdir(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        return d
+
+    def test_bad_config_test_command_is_unparsable(self):
+        self.config['defaults']['test'] = "pnpm exec 'vitest"
+        d = decide('ls', '/tmp', self.config)
+        self.assertEqual((d.action, d.rule), ('block', 'unparsable'))
+        self.assertIn('defaults.test cannot be parsed', d.message)
+        self.assertIn('hardrail.config.json', d.message)
+
+    def test_no_row_hits_the_catch_all(self):
+        for command, _action, _rule, *cwd in ROWS:
+            with self.subTest(command=command):
+                d = decide(command, os.path.join(ROOT, *cwd) if cwd else "/tmp", self.config)
+                self.assertNotIn('could not evaluate', d.message)
+
+    def test_parse_error_text_reaches_the_agent(self):
+        d = decide('$x push -f', '/tmp', self.config)
+        self.assertEqual((d.action, d.rule), ('block', 'unparsable'))
+        self.assertIn('command word is a variable', d.message)
+        d = decide('echo $(ls) | bash', '/tmp', self.config)
+        self.assertIn('command piped into a shell cannot be inspected', d.message)
+
+    def test_tokenizer_error_keeps_the_fix_hint(self):
+        d = decide('pnpm test "oops', '/tmp', self.config)
+        self.assertEqual((d.action, d.rule), ('block', 'unparsable'))
+        self.assertIn('split it or quote it plainly', d.message)
+
+    def test_xargs_stdin_message(self):
+        d = decide("echo 'push -f' | xargs git", '/tmp', self.config)
+        self.assertIn('xargs builds the command from stdin', d.message)
+
+    def test_non_utf8_workspace_yaml(self):
+        tmp = self._tmpdir()
+        with open(os.path.join(tmp, 'pnpm-workspace.yaml'), 'wb') as f:
+            f.write(b'\xff\xfe')
+        d = decide('pnpm --filter a test src/a.test.ts', tmp, self.config)
+        self.assertEqual(d.action, 'block')
+        self.assertNotEqual(d.rule, 'unparsable', d.message)
+
+    def test_deep_package_json(self):
+        tmp = self._tmpdir()
+        with open(os.path.join(tmp, 'package.json'), 'w') as f:
+            f.write('[' * 100000)
+        d = decide('pnpm test src/a.test.ts', tmp, self.config)
+        self.assertEqual((d.action, d.rule), ('allow', ''), d.message)
+
+    def test_chained_message_names_inner_command(self):
+        self.assertIn('git commit -m x', decide('bash -c "git commit -m x"', '/tmp', self.config).message)
+
+    def test_wrapper_variable_message_says_why(self):
+        d = decide('sudo $x push -f', '/tmp', self.config)
+        self.assertIn('command word is a variable', d.message)
 
     def test_table_size(self):
         self.assertGreaterEqual(len(ROWS), 40)
@@ -59,6 +118,18 @@ class GuardTest(unittest.TestCase):
 
     def test_watch_fix_docker_logs(self):
         self.assertIn("use docker compose logs --tail=200 api", self._msg("docker compose logs -f api"))
+        self.assertIn("use docker compose -f dc.yml logs --tail=200", self._msg("docker compose -f dc.yml logs -f"))
+        self.assertIn("use docker logs -n 5 api", self._msg("docker logs --follow -n 5 api"))
+
+    def test_watch_fix_tail_keeps_files(self):
+        self.assertIn("use tail -n 200 a.log b.log", self._msg("tail -F a.log b.log"))
+        self.assertIn("use tail -n 200 a.log", self._msg("tail -fn 20 a.log"))
+        self.assertIn("use tail -n 200 -- -weird.log", self._msg("tail -f -- -weird.log"))
+        self.assertTrue(self._msg("tail -f").endswith("use tail -n 200 FILE"))
+
+    def test_push_delete_message(self):
+        self.assertIn("deleting a remote branch is blocked; ask before deleting remote refs",
+                      self._msg("git push origin :main"))
 
     def test_watch_fix_playwright_drops_flag(self):
         self.assertTrue(self._msg("pnpm exec playwright test --ui e2e/a.spec.ts")
@@ -68,7 +139,7 @@ class GuardTest(unittest.TestCase):
         self.assertIn("run the package's `test` script with a path", self._msg("pnpm test:watch"))
 
     def test_watch_fix_vitest(self):
-        self.assertTrue(self._msg("vitest src/a.test.ts").endswith("pnpm exec vitest --run src/a.test.ts"))
+        self.assertTrue(self._msg("vitest src/a.test.ts").endswith("run once: vitest --run src/a.test.ts"))
 
     def test_watch_fix_jest(self):
         self.assertTrue(self._msg("jest --watch src/a.test.ts").endswith("jest --watchAll=false src/a.test.ts"))
@@ -81,6 +152,33 @@ class GuardTest(unittest.TestCase):
     def test_chained_gated_names_gated_part(self):
         self.assertIn("run `git push origin main` as its own call",
                       self._msg("git status && git push origin main"))
+
+    def test_related_fix_keeps_subcommand(self):
+        self.assertIn('vitest related --run src/a.ts', decide('vitest related src/a.ts', '/tmp', DEFAULTS).message)
+
+    def test_jest_fix_is_jest(self):
+        m = decide('npx jest', '/tmp', DEFAULTS).message
+        self.assertIn('npx jest', m)
+        self.assertNotIn('vitest', m)
+
+    def test_fix_honours_defaults_test(self):
+        cfg = copy.deepcopy(DEFAULTS)
+        cfg['defaults']['test'] = 'npx jest'
+        self.assertIn('npx jest <path', decide('npm test', '/tmp', cfg).message)
+
+    def test_all_fix_non_pnpm_base(self):
+        cfg = copy.deepcopy(DEFAULTS)
+        cfg['defaults']['test'] = 'npx vitest run'
+        self.assertNotIn('--filter <name> exec', decide('pnpm -r test', FX, cfg).message)
+
+    def test_list_fix_has_no_list_path(self):
+        m = decide('vitest list', os.path.join(ROOT, 'test/fixtures/subcommand-names'), DEFAULTS).message
+        self.assertIn('vitest list --run <path', m)
+        self.assertNotIn('--run list', m)
+
+    def test_watch_subcommand_fix_drops_it(self):
+        self.assertTrue(decide('vitest watch src/a.test.ts', '/tmp', DEFAULTS).message
+                        .endswith('run once: vitest --run src/a.test.ts'))
 
     def test_message_on_single_line(self):
         for command, *_ in ROWS:

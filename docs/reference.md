@@ -20,16 +20,20 @@ file in this repository; the file is named in each section.
 
 1. **bash pre-filter** (`adapters/claude/pre-bash.sh`). Reads the hook's JSON from stdin,
    takes everything after the first `"command":` key and runs a keyword `case` on it. No
-   gated keyword → `exit 0` without starting python. The keyword list must cover the first
+   gated keyword, and no quote, backslash, `$`, backtick, `<(`, shell name, `xargs` or `parallel` (any of them can
+   hide a keyword: `pu''sh`, `$cmd`) → `exit 0` without starting python. The keyword list must cover the first
    word of every gated and heavy entry; a test checks it against the defaults.
-2. **python shim** (`adapters/claude/pre_bash.py`, under 30 lines). Parses the JSON, finds
+2. **python shim** (`adapters/claude/pre_bash.py`, 30 lines or fewer). Parses the JSON, finds
    the nearest `hardrail.config.json` above `cwd`, calls `decide`, maps the decision to an
    exit code and a stderr line.
 3. **tokenizer** (`core/shell.py`). Splits the command on `;`, `&&`, `||`, `|`, `&` and
    newlines, quote- and comment-aware. Text that another shell would execute is parsed as
    its own chain ("payload"): `sh -c "…"`, `eval …`, a heredoc or here-string fed to
-   `bash`/`sh`/`zsh`/`dash` (directly or through a pipe), `$(…)`, backticks, and process
-   substitution `<(…)` / `>(…)`.
+   `bash`/`sh`/`zsh`/`dash` (directly or through a pipe), `source` / `.` of stdin (`-`,
+   `/dev/stdin`, a here-string), `builtin eval` / `command eval`, `$(…)`, backticks,
+   process substitution `<(…)` / `>(…)`, and the text a command runner hands to a shell:
+   `watch …`, `ssh <host> …`, `parallel … ::: …` (the command plus its `:::` inputs),
+   `flock -c …`, `script -c …`, `npx -c …` / `<manager> exec|dlx -c|--call|--shell-mode …`.
 4. **rules** (`core/guard.py`), in a fixed order; the first hit wins.
 5. **package resolution** (`core/packages.py`) for the test-scoping rule, see
    [Monorepo resolution](#monorepo-resolution).
@@ -45,7 +49,10 @@ Exactly as the code does it:
 |---|---|
 | shim raises (bad JSON, missing key, unexpected error) | stderr `hardrail: guard error: …`, exit 0 — the agent is never blocked by a bug in the guard |
 | `python3` not on `PATH` | stderr `hardrail: python3 not found, guard disabled`, exit 0 |
+| shim missing (`pre_bash.py` not next to `pre-bash.sh`) | stderr `hardrail: pre_bash.py not found, guard disabled`, exit 0 |
+| event without a command (no `tool_input.command`, or an empty one) | exit 0, no output |
 | `hardrail.config.json` is invalid JSON, not an object, or a section has the wrong type | stderr `hardrail: config ignored (…), using defaults`, rules still enforced |
+| `hardrail.config.json` has an unknown top-level key | stderr `hardrail: unknown config key X ignored`, the rest of the file applies; `$schema` is accepted silently |
 | command cannot be tokenized (unbalanced quote, unbalanced `$(`) | block, rule `unparsable` |
 | heredoc body fed to a shell is over 200 lines or 8192 bytes | block, rule `unparsable`, message says to run it as a script file |
 | substitutions nested deeper than 20 levels or over 8192 bytes in total | block, rule `unparsable` |
@@ -53,28 +60,63 @@ Exactly as the code does it:
 
 ## Rules
 
-Order matters: the first rule that fires decides.
+Order, as `decide` runs it; the first that fires decides:
+
+1. the tokenizer cannot split the command → `unparsable`;
+2. `force_push`;
+3. `xargs` fed by a pipe runs a command that is not read-only → `unparsable`;
+4. `chained_gated`;
+5. `watch_mode`;
+6. `unscoped_test`;
+7. `heavy`.
+
+A rule that cannot read a command (an unmodelled wrapper option, an expanded `git push`
+argument) stops there with `unparsable`. So `ls | xargs git push -f` reports `force_push`.
 
 | Rule | What it catches | Blocks, for example | The message tells the agent to |
 |---|---|---|---|
-| `unparsable` | a command the tokenizer cannot split safely; an oversized shell payload | `pnpm test "oops` | split it or quote it plainly / run it as a script file |
-| `force_push` | `git push` with `--force`, `-f` in a short-flag cluster, `--mirror`, or a `+refspec`; `git` found by basename, git globals (`-C`, `-c`, `--git-dir`, …) skipped | `/usr/bin/git push --force origin main` | use `git push --force-with-lease` |
-| `chained_gated` | two or more commands in one call where any of them starts with a `guard.gatedActions` prefix; payload chains count separately | `git commit -m x && git push` | run `` `git commit -m x` `` as its own call |
-| `watch_mode` | bare `vitest` without `--run`; `jest --watch`/`--watchAll`; an explicit `--watch` on a test script; `test:watch`; `docker compose logs -f`; `playwright`/`test:e2e` with `--ui`, `--watch` or `--debug` | `docker compose logs -f api` | `use docker compose logs --tail=200 api` (each case gets its own one-shot form) |
-| `unscoped_test` | a test runner invocation whose own arguments carry no path (`/` or `*.test.ts`-style), or one that spans every workspace package | `pnpm test` | `pnpm exec vitest --run <path/to/file.test.ts>` |
+| `unparsable` | a command the tokenizer cannot split safely; an oversized shell payload; `xargs` fed by a pipe that runs a command which is not read-only | `pnpm test "oops`, `ls \| xargs rm` | split it or quote it plainly / write the command literally / run it as a script file / list the files explicitly; the message names the construct |
+| `force_push` | `git push` with `--force`, `-f` or `-d` in a short-flag cluster, `--mirror`, `--delete`, a `+refspec` or a `:branch` refspec; `git` found by basename, git globals (`-C`, `-c`, `--git-dir`, …) skipped; also the command `npx`, `bunx`, `<manager> exec\|dlx\|x` or `find -exec\|-execdir\|-ok\|-okdir` runs. A `git push` argument with `$`, `$(…)`, a backtick or a `{a,b}` brace list anywhere in it → `unparsable`, since an unquoted expansion can split into `-f` or expand to `+ref` (write the refspec literally; quotes are not tracked, so `HEAD:"$BR"` is blocked too) | `/usr/bin/git push --force origin main` | use `git push --force-with-lease` / ask before deleting remote refs |
+| `chained_gated` | two or more commands in one call where any of them starts with a `guard.gatedActions` prefix; a gated action inside a payload counts when the whole command has more than one command | `git commit -m x && git push` | run `` `git commit -m x` `` as its own call |
+| `watch_mode` | bare `vitest` without `--run`; `jest --watch`/`--watchAll`; an explicit `--watch` on a test script; `test:watch`; `docker compose logs -f`; `docker logs -f`; `tail -f`; `playwright`/`test:e2e` with `--ui`, `--watch` or `--debug` | `docker compose logs -f api` | `use docker compose logs --tail=200 api` (each case gets its own one-shot form) |
+| `unscoped_test` | a test runner invocation whose own arguments carry no path, or one that spans every workspace package | `pnpm test` | `pnpm exec vitest --run <path/to/file.test.ts>` |
 | `heavy` (warn only) | commands matching a `heavy` glob after the package-manager prefix is stripped | `pnpm build` | run it outside the agent loop or in a background task |
 
 `guard.mode: "warn"` downgrades every block to a `WARN` line with exit 0, for a trial
 period on an existing repo. `heavy` is always a warning.
 
+Fixed edge cases (each blocks unless noted):
+
+- `$'…'` and `$"…"` quoting → `unparsable`.
+- A command word that is only a variable (`$cmd`, `${x}`, `"$@"`) → `unparsable`.
+  `$HOME/bin/tool` (variable plus a literal path) is allowed.
+- `<command> | bash`: literal `echo`/`printf` arguments are parsed as the payload, and a
+  `cat` heredoc body is parsed as the payload; anything else piped into a shell, including
+  `curl … | sh` and `echo $(…) | bash`, → `unparsable`.
+- A shell reading a process substitution (`bash <(…)`, `bash < <(…)`, `source <(…)`,
+  `. <(…)`) → `unparsable`.
+- `watch`, `ssh`, `parallel`, `flock`, `script`, `caffeinate` and `unbuffer` with an
+  option the guard does not model → `unparsable`. `parallel` → `unparsable` when it has no
+  command before `:::`, when the command is a shell, `eval` or `source`, or when its inputs
+  come from stdin or a `::::` file and the command is not read-only (the `xargs` list).
+- A gated action inside a payload counts as chained whenever the whole command has more
+  than one command; `bash -c "git commit -m x"` alone blocks, and the message says to run
+  the inner command directly.
+- `git push --delete`, `git push -d` and `git push origin :branch` → `force_push`, message
+  "deleting a remote branch is blocked; ask before deleting remote refs".
+- A path argument is a word with `/`, a `.test.`/`.spec.` name, or an existing file or
+  directory relative to `cwd` (`vitest --run src` is allowed when `src/` exists). An empty
+  word, `.`, `..`, or a `--testPathPattern` of `.`/`.*` is not a scope.
+
 ## Runner detection
 
 Runner detection covers `pnpm`/`npm`/`yarn`/`bun` scripts named `test` or `test:*`,
-`run test`, `exec`/`dlx`/`npx`/`bunx` followed by `vitest` or `jest`, direct
-`vitest`/`jest` binaries, `turbo run test`, `nx test`, `yarn workspace <name> test`,
+`run test` (manager options after `run` skipped: `pnpm run -r test`), `exec`/`dlx`/`npx`/`bunx`
+followed by `vitest` or `jest`, direct `vitest`/`jest` binaries, `turbo run test`, `turbo test`,
+`nx test`, `nx run-many -t|--target[=]` with `test` among the targets, `yarn workspace <name> test`,
 `yarn workspaces foreach`, the configured `defaults.test` command, and all of these behind
 env-var prefixes (`CI=1 …`) or wrappers (`sudo`, `time`, `env`, `nohup`, `command`,
-`exec`, `corepack`).
+`exec`, `corepack`, `flock`, `unbuffer`, `caffeinate`, `script`).
 
 ## Verdict table
 
@@ -116,19 +158,21 @@ Keys read by the guard today (`core/config.py` `DEFAULTS`):
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `defaults.test` | string | `"pnpm exec vitest --run"` | the scoped test command; used in fix messages and recognised as a runner |
-| `packages` | object | `{}` | `name → { root, test? }`; a package `test` command is also recognised as a runner |
+| `packages` | object | `{}` | `name → { test }`; a package `test` command is also recognised as a runner |
 | `guard.mode` | `"block"` \| `"warn"` | `"block"` | `warn` downgrades every block to a warning |
-| `guard.gatedActions` | string[] | `git commit`, `git push`, `git reset`, `git rebase`, `git merge`, `git stash`, `git clean`, `rm`, `pnpm install`, `pnpm add`, `pnpm remove`, `npm install`, `yarn add`, `docker`, `gh pr`, `prisma migrate` | command prefixes that must run as their own call |
-| `heavy` | string[] | `build`, `generate:*`, `prisma *`, `playwright`, `docker compose logs` | globs (`*` and `?` only) matched against the command after `pnpm`/`npm run`/`yarn`/`npx` is stripped; a match warns |
+| `guard.gatedActions` | string[] | `git commit`, `git push`, `git reset`, `git rebase`, `git merge`, `git stash`, `git clean`, `rm`, `pnpm install`, `pnpm add`, `pnpm remove`, `npm install`, `yarn add`, `docker`, `gh pr`, `prisma migrate`, `pnpm i`, `npm i`, `npm ci`, `yarn install`, `bun install`, `bun add` | command prefixes that must run as their own call |
+| `heavy` | string[] | `build`, `build:*`, `turbo build`, `vite build`, `generate:*`, `prisma`, `prisma *`, `playwright`, `playwright *` | globs (`*` and `?` only) matched against the command after `pnpm`/`npm run`/`yarn`/`npx` is stripped (`turbo run <script>` the same way); an entry matches the command exactly or as a word prefix; a match warns |
 | `worktree` | object | `{ "required": false, "dir": ".worktrees", "include": [] }` | reserved for the worktree guard (not read yet) |
 
 The schema also accepts `ci`, `codegen`, `conventionChecks`, `modules`, `language`,
-`defaults.lint`, `defaults.typecheck` and `packages.*.testFor`. They belong to the
+`$schema`, `defaults.lint` and `defaults.typecheck`. They belong to the
 planned CI and `init` layers and are not read by any code in this release.
 
-If you add a gated or heavy entry whose first word is not in the pre-filter keyword list
-of `pre-bash.sh`, add the keyword there too; otherwise the bash fast path returns before
-python can see it. Rendering that list from the config is on the roadmap.
+Lists in the file replace the default list; to add one entry, repeat the defaults and
+append it. When `hardrail.config.json` exists at `$CLAUDE_PROJECT_DIR`, `pre-bash.sh`
+skips its keyword fast path, so added gated or heavy entries reach python even when their
+first word is not in the keyword list. Rendering that list from the config is on the
+roadmap.
 
 ## Monorepo resolution
 
@@ -167,7 +211,7 @@ The hook runs on every Bash call, so it must be cheap:
 
 - **bash fast path** — a command with no gated keyword never starts python.
 - **python path** — `python3 -I -S` with a core that imports only `os`, `re`, `shlex`,
-  `json`, `glob`; no `dataclasses`, `typing` or `fnmatch`, whose import cost is a large
+  `json`, `glob`, `copy`; no `dataclasses`, `typing` or `fnmatch`, whose import cost is a large
   share of a cold start (check with `python3 -X importtime`).
 - **payload caps** — a heredoc body handed to a shell is parsed only up to 200 lines /
   8192 bytes; substitutions are parsed up to 20 levels deep / 8192 bytes in total. Larger

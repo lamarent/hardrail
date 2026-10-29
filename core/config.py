@@ -2,6 +2,7 @@
 import copy
 import json
 import os
+import shlex
 
 CONFIG_NAME = "hardrail.config.json"
 
@@ -14,12 +15,17 @@ DEFAULTS = {
             "git commit", "git push", "git reset", "git rebase", "git merge",
             "git stash", "git clean", "rm", "pnpm install", "pnpm add",
             "pnpm remove", "npm install", "yarn add", "docker", "gh pr",
-            "prisma migrate",
+            "prisma migrate", "pnpm i", "npm i", "npm ci", "yarn install",
+            "bun install", "bun add",
         ],
     },
-    "heavy": ["build", "generate:*", "prisma *", "playwright", "docker compose logs"],
+    "heavy": ["build", "build:*", "turbo build", "vite build", "generate:*", "prisma", "prisma *",
+              "playwright", "playwright *"],
     "worktree": {"required": False, "dir": ".worktrees", "include": []},
 }
+
+# Top-level keys the schema documents but the guard does not read; accepted silently.
+_SCHEMA_ONLY_KEYS = ("$schema", "ci", "codegen", "conventionChecks", "modules", "language")
 
 
 def _merge(base, override):
@@ -41,7 +47,8 @@ def _fallback(reason):
 
 def load(repo_root):
     """Merged config. A broken file never disables the guard: it falls back to DEFAULTS
-    and records why under the `_load_error` key."""
+    and records why under the `_load_error` key. Unknown top-level keys are not fatal: the
+    config is applied and `_load_warning` names them."""
     path = os.path.join(repo_root, CONFIG_NAME)
     if not os.path.isfile(path):
         return copy.deepcopy(DEFAULTS)
@@ -55,8 +62,12 @@ def load(repo_root):
     out = _merge(DEFAULTS, data)
     errors = []
     _check_types(DEFAULTS, out, "", errors)
+    _check_test_commands(out, errors)
     if errors:
         out["_load_error"] = "; ".join(errors)[:200]
+    unknown = [k for k in data if k not in DEFAULTS and k not in _SCHEMA_ONLY_KEYS]
+    if unknown:
+        out["_load_warning"] = ("unknown config key %s ignored" % ", ".join(unknown))[:200]
     return out
 
 
@@ -75,6 +86,28 @@ def _check_types(defaults, cfg, prefix, errors):
             errors.append("%s%s must be %s" % (prefix, key, type(default).__name__))
         elif isinstance(default, dict):
             _check_types(default, value, prefix + key + ".", errors)
+
+
+def _check_test_commands(cfg, errors):
+    """A test command that cannot be tokenized would make every command unparsable:
+    `defaults.test` reverts to the default and a package drops its `test`."""
+    entries = [("defaults.test", cfg["defaults"], DEFAULTS["defaults"]["test"])]
+    packages = cfg.get("packages")
+    if isinstance(packages, dict):
+        entries += [("packages.%s.test" % name, pkg, None) for name, pkg in packages.items()
+                    if isinstance(pkg, dict)]
+    for key, holder, default in entries:
+        cmd = holder.get("test")
+        if not isinstance(cmd, str):
+            continue
+        try:
+            shlex.split(cmd)
+        except ValueError as e:
+            errors.append("%s cannot be parsed (%s)" % (key, e))
+            if default is None:
+                del holder["test"]
+            else:
+                holder["test"] = default
 
 
 def find_root(cwd):

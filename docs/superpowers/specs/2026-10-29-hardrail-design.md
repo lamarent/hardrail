@@ -59,7 +59,7 @@ same report on the adopter's own transcripts.
 - Hooks: python3 stdlib only, self-contained files copied into the adopting repo; a bash
   fast path exits early for commands that contain no gated keyword. No `jq`, no Node, no
   import from the plugin directory.
-- Hook p95 latency < 100 ms, measured in this repo's CI, cold and warm.
+- Hook p95 latency < 100 ms, measured in this repo's CI, warm.
 - Minimum Claude Code version pinned in the manifest (the version where plugin `bin/`,
   `${CLAUDE_PLUGIN_DATA}`, `PostCompact` and `.worktreeinclude` all exist).
 - One language: python3 ≥ 3.9 stdlib for core, adapters and `bin/hardrail`. No Node
@@ -110,11 +110,11 @@ new adapter adds no guard tests. `hardrail init --adapter claude` selects the sh
 {
   "defaults": { "test": "pnpm exec vitest --run", "lint": "biome check", "typecheck": "pnpm typecheck" },
   "packages": {
-    "backend":  { "root": "packages/backend",  "testFor": "{dir}/{name}.test.{ext}" },
-    "frontend": { "root": "packages/frontend", "testFor": ["{dir}/{name}.test.{ext}", "{dir}/__tests__/{name}.test.{ext}"] }
+    "backend":  { "test": "pnpm exec vitest --run" },
+    "frontend": { "test": "pnpm exec vitest --run" }
   },
   "guard": { "mode": "block", "gatedActions": ["git commit", "git push", "rm -rf", "docker", "pnpm install", "prisma migrate", "gh pr"] },
-  "heavy": ["build", "generate:*", "prisma *", "playwright", "docker compose logs"],
+  "heavy": ["build", "build:*", "turbo build", "vite build", "generate:*", "prisma", "prisma *", "playwright", "playwright *"],
   "worktree": { "required": true, "dir": ".worktrees", "include": [".env*", "certs/", "lefthook-local.yml"] },
   "ci": { "alwaysFull": ["**/handlers/**", "**/di/**"], "skip": ["**/*.md", "docs/**"], "base": "main" },
   "codegen": [{ "run": "pnpm generate:openapi", "verify": "git diff --exit-code -- openapi/" }],
@@ -124,7 +124,8 @@ new adapter adds no guard tests. `hardrail init --adapter claude` selects the sh
 }
 ```
 
-A JSON schema ships; `init --check` validates. `packageManager` is detected from the
+`packages.<name>` holds only `test` (2026-10-29: the `root` and source-to-test mapping
+keys were removed; no code read them). A JSON schema ships; `init --check` validates. `packageManager` is detected from the
 lockfile. `heavy` and `alwaysFull` are globs matched against the normalised command /
 path after the package-manager prefix is stripped. Hooks and CI read the config at
 runtime; rules are rendered from it, and `--check` reports rendered rules that are stale.
@@ -263,7 +264,7 @@ cannot replace a parsed guard.
 | Part | Test | Pass criterion |
 |---|---|---|
 | bash-guard | table of ≥ 40 commands incl. `p"n"pm test`, `npm test`, newline/`&` chains, heredoc into `bash`, `-C`/`--filter`, `tests/unit/`, `find -exec rm {} \;`, `docker run sh -c "a; b"` | every row as expected |
-| latency | 50 runs, cold + warm | p95 < 100 ms |
+| latency | 50 runs, warm | p95 < 100 ms |
 | worktree-guard | fixture with `.worktrees/`; edit in main vs worktree; warn mode | blocks only in main; warn never blocks |
 | init no-overwrite | fixture with existing `.claude/` + `settings.json`; hash all files before/after; run twice | hashes unchanged; `.hardrail-new` present; second run writes nothing |
 | init --check | edit an installed file; remove a hook entry | non-zero, names the file / the hook |
@@ -302,6 +303,7 @@ Milestones, ordered by value on a real repo, not by the order the code is easies
 | Version | Delivers | Proof it is done |
 |---|---|---|
 | 0.1 | guard core + Claude Code adapter (build steps 1, 7) | hook blocks what prose could not; bench, leak gate and CI green |
+| 0.1.1 — hardening (this plan) | tokenizer and rule fixes from review: fail closed on uninspectable constructs, remote branch deletion, `tail -f` / `docker logs -f`, schema and docs aligned with the code | robustness test, table test and CI green |
 | 0.2 | usable on an unknown repo in minutes: `init`, `check`, `upgrade` with a content-hash manifest, pre-filter keywords rendered from config, CI scoped-test mapping (steps 2, 3) | acceptance on a fresh public TypeScript monorepo, by hand first, then by `init` |
 | 0.3 | core becomes a platform: rule registry, `Decision.why`, corpus as data, JSON stdin/stdout contract for adapters; `codex` adapter | the `codex` adapter adds zero policy and zero guard tests |
 | 0.4 | self-improvement with evidence: counts-only metrics outside the repo, `hardrail report`, the loop *missed command in a transcript → corpus row → rule* (step 6) | three numbers per week from the adopting repo: miss rate, false-block rate, hook p95 |
@@ -335,6 +337,11 @@ The current split (core / adapters / test) is kept. What changes is boundaries a
 
 Items 1 and 2 come first: worktree guard, metrics and `init` all depend on them.
 
+Still open after 0.1.1: one unified quote scanner. Three scanners in `core/shell.py` track
+quotes separately: `_protect` (separator protection before splitting), `_find_heredoc`
+(heredoc operators) and `_walk` (command substitutions). 0.1.1 made them share one heredoc
+delimiter parser, `_heredoc_at`, but did not merge them.
+
 ## Repo layout
 
 ```
@@ -365,3 +372,24 @@ hardrail/
 - CI layer in v1. Worktree is required when working with Claude Code, so it is a guard.
 - Core vs optional decided by "works on a real repo", not by job-description fit.
 - Agent proposes; human approves.
+- 2026-10-29: `$'…'` and `$"…"` quoting is unparsable; fail closed beats decoding C escapes.
+- 2026-10-29: a command word that is only a variable (`$cmd`, `${x}`, `"$@"`) is unparsable; `$HOME/bin/x` stays allowed.
+- 2026-10-29: `<prev> | bash` parses literal `echo`/`printf` arguments or an inspected heredoc as the payload; anything else piped into a shell, including `curl … | sh`, is unparsable.
+- 2026-10-29: a shell reading a process substitution (`bash <(…)`, `bash < <(…)`) is unparsable.
+- 2026-10-29: a gated action inside any payload counts as chained when the whole command has more than one command; `bash -c "git commit -m x"` alone blocks.
+- 2026-10-29: `git push --delete`, `-d` and `origin :branch` block under `force_push` ("deleting a remote branch is blocked; ask before deleting remote refs").
+- 2026-10-29: config lists keep replace semantics, documented in the README; no merge key.
+- 2026-10-29: `packages.<name>` is `{ "test": string }`; the `root` and source-to-test mapping keys are removed.
+- 2026-10-29: an argument that is an existing file or directory relative to cwd counts as a path, besides `/` and `.test.`/`.spec.` names.
+- 2026-10-29: the pre-filter stays keyword-based until 0.2 renders it from config; until then the fast path is skipped when `$CLAUDE_PROJECT_DIR/hardrail.config.json` exists.
+- 2026-10-29: the latency bench stays warm-only; the Verification row says "warm".
+- 2026-10-29: the heredoc-pipe exemption applies only when the producer argv without redirects is exactly `cat <heredoc>`.
+- 2026-10-29: a command word containing `$` and no `/` is unparsable; a literal last path segment (`$HOME/bin/tool`) is allowed.
+- 2026-10-29: `xargs` fed by a pipe that runs a command which is not read-only is unparsable; file-fed `xargs -a f` / `xargs … < f` is a known gap.
+- 2026-10-29: a path word must name something narrower than cwd: empty, `.`, `..`, or a `--testPathPattern` of `.`/`.*` is not a scope; a leading vitest subcommand (`run watch dev list bench related`) is never a path, and that skip applies to a package script only when its first word is `vitest`.
+- 2026-10-29: an unknown top-level config key is a warning and the config still applies; `$schema` is accepted silently; a config that fails to load falls back to the defaults.
+- 2026-10-29: only a `packages:` key at the indent of the first top-level key in `pnpm-workspace.yaml` counts.
+- 2026-10-29: heavy entries match exactly or as a word prefix; `turbo run <script>` normalizes like `pnpm run <script>`; `docker compose logs` is not heavy (`watch_mode` covers `--follow`).
+- 2026-10-29: `-d` joins the short-cluster check for force push like `-f` (`-ud`, `-vd`).
+- 2026-10-29: pre-filter keywords `tail`, `podman` and `turbo` added; `CI=1 docker compose logs -f` blocks.
+- 2026-10-29: `-C {rel}` in fix messages goes right after the leading `pnpm` token.

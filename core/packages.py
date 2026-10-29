@@ -5,13 +5,10 @@ import json
 import os
 import re
 
-from core.argv import strip_env_and_wrappers
-from core.shell import Simple
+from core.argv import manager_flags, strip_env_and_wrappers
 
-_MANAGERS = ('pnpm', 'npm', 'yarn', 'bun')
 _ALL_FLAGS = ('-r', '--recursive', '--parallel')
 _ROOT_FLAGS = ('-w', '--workspace-root')
-_LONG_VALUE = ('--dir', '--filter', '--filter-prod', '--prefix', '--cwd')
 _DIR_FLAGS = ('-C', '--dir')
 _FILTER_FLAGS = ('--filter', '-F', '--filter-prod')
 _SELECTOR = ('*', '...', '[')
@@ -43,7 +40,7 @@ def _read_json(path):
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
     return data if isinstance(data, dict) else None
 
@@ -77,21 +74,66 @@ def _ancestor_package(start, stop=None):
         cur = parent
 
 
+_YAML_KEY = re.compile(r'^\s*(["\']?)packages\1\s*:(.*)$')
+
+
+def _strip_comment(line):
+    """Drop a trailing `# comment` that is not inside quotes."""
+    quote = None
+    for i, ch in enumerate(line):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in '"\'':
+            quote = ch
+        elif ch == '#' and (i == 0 or line[i - 1] in ' \t'):
+            return line[:i]
+    return line
+
+
+def _unquote(word):
+    word = word.strip()
+    if len(word) >= 2 and word[0] == word[-1] and word[0] in '"\'':
+        return word[1:-1]
+    return word
+
+
+def _yaml_globs(text):
+    """`packages:` from pnpm-workspace.yaml: a block list, an inline list or a multi-line flow list."""
+    lines = [_strip_comment(line).rstrip() for line in text.splitlines()]
+    first = next((line for line in lines if line.strip()), '')
+    top = len(first) - len(first.lstrip())  # only keys at the first key's indent are top level
+    for i, line in enumerate(lines):
+        m = _YAML_KEY.match(line)
+        if not m or len(line) - len(line.lstrip()) != top:
+            continue
+        rest = m.group(2).strip()
+        if rest.startswith('['):
+            flow = ' '.join([rest] + lines[i + 1:])
+            body = flow[1:flow.index(']')] if ']' in flow else ''
+            return [g for g in (_unquote(x) for x in body.split(',')) if g]
+        if rest:
+            return []
+        globs = []
+        for item in lines[i + 1:]:
+            item = item.strip()
+            if not item:
+                continue
+            if item != '-' and not item.startswith('- '):
+                break
+            glob_ = _unquote(item[1:])
+            if glob_:
+                globs.append(glob_)
+        return globs
+    return []
+
+
 def _workspace_globs(repo_root):
-    globs = []
     try:
         with open(os.path.join(repo_root, "pnpm-workspace.yaml"), encoding="utf-8") as f:
-            lines = f.read().splitlines()
-    except OSError:
-        lines = []
-    inside = False
-    for line in lines:
-        if re.match(r'^packages\s*:', line):
-            inside = True
-        elif inside and line.strip().startswith('- '):
-            globs.append(line.strip()[2:].strip().strip('"\''))
-        elif inside and line.strip() and not line.startswith((' ', '\t', '#')):
-            inside = False
+            globs = _yaml_globs(f.read())
+    except (OSError, UnicodeDecodeError):
+        globs = []
     if not globs:
         data = _read_json(os.path.join(repo_root, "package.json")) or {}
         ws = data.get("workspaces")
@@ -99,6 +141,21 @@ def _workspace_globs(repo_root):
             ws = ws.get("packages")
         globs = [g for g in ws if isinstance(g, str)] if isinstance(ws, list) else []
     return globs
+
+
+def find_workspace_root(cwd):
+    """Nearest ancestor of cwd (inclusive) with pnpm-workspace.yaml or a package.json that
+    has a `workspaces` key, else None."""
+    cur = os.path.abspath(cwd)
+    while True:
+        if os.path.isfile(os.path.join(cur, "pnpm-workspace.yaml")):
+            return cur
+        if "workspaces" in (_read_json(os.path.join(cur, "package.json")) or {}):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
 
 
 def _by_name(name, repo_root):
@@ -110,45 +167,21 @@ def _by_name(name, repo_root):
     return None
 
 
-def _parse_flags(argv):
-    """(flag, value) pairs between the package manager and its subcommand.
-
-    Handles `--flag value`, `--flag=value`, `-C=value`, and short clusters (`-rF value`).
-    """
-    argv = strip_env_and_wrappers(argv)[1]
-    if not argv or os.path.basename(argv[0]) not in _MANAGERS:
-        return []
-    out = []
-    i = 1
-    while i < len(argv) and argv[i].startswith('-') and argv[i] != '-':
-        t = argv[i]
-        nxt = argv[i + 1] if i + 1 < len(argv) else ""
-        if t.startswith('--'):
-            name, eq, val = t.partition('=')
-            if name in _LONG_VALUE and not eq:
-                val, i = nxt, i + 1
-            out.append((name, val if (eq or name in _LONG_VALUE) else None))
-        elif '=' in t:
-            name, _, val = t.partition('=')
-            out.append((name, val))
-        else:
-            for k, letter in enumerate(t[1:], start=2):
-                if letter in 'FC':
-                    rest = t[k:]
-                    if not rest:
-                        rest, i = nxt, i + 1
-                    out.append(('-' + letter, rest))
-                    break
-                out.append(('-' + letter, None))
-        i += 1
-    return out
-
-
-def _filter_package(flt, repo_root):
+def _filter_package(flt, repo_root, cwd):
+    """Package a single `--filter` value selects; "all" for selectors and lookup misses."""
+    braced = re.fullmatch(r'\{([^{}]+)\}', flt)
+    if braced:
+        flt = braced.group(1)
+        if flt.startswith('/') or flt == '.':
+            pass
+        elif not flt.startswith(('./', '../')):
+            flt = './' + flt
     if any(x in flt for x in _SELECTOR) or '!' in flt or '{' in flt or '^' in flt:
         return "all"
-    if flt.startswith(('./', '../', '/')) or ('/' in flt and '@' not in flt):
-        d = os.path.join(repo_root, flt)
+    if flt == '.':
+        pkg = _ancestor_package(cwd, repo_root) if _within(cwd, repo_root) else None
+    elif flt.startswith(('./', '../', '/')) or ('/' in flt and '@' not in flt):
+        d = os.path.normpath(os.path.join(cwd if flt.startswith('.') else repo_root, flt))
         pkg = _package_at(d) if _within(d, repo_root) else None
     else:
         pkg = _by_name(flt, repo_root)
@@ -193,7 +226,7 @@ def resolve_package(simple, cwd, config, repo_root,
     inside = _within(base, repo_root)
     target = None
     filters = []
-    for flag, value in _parse_flags(simple.argv):
+    for flag, value in manager_flags(simple.argv):
         if flag in _ALL_FLAGS:
             return "all"
         if flag in _ROOT_FLAGS:
@@ -209,9 +242,15 @@ def resolve_package(simple, cwd, config, repo_root,
         filters.append(ws)
     if len(filters) > 1:
         return "all"
-    if filters:
-        return _filter_package(filters[0], repo_root)
     cds = _cd_targets(simple, prev) if target is None else []
+    if filters:
+        if target is not None:
+            base = os.path.join(base, _expand(target))
+        for d in cds:
+            if d == "-":
+                return "all"
+            base = os.path.normpath(os.path.join(base, _expand(d)))
+        return _filter_package(filters[0], repo_root, base)
     if cds:
         for d in cds:
             if d == "-":

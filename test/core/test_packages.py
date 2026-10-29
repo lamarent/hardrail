@@ -1,7 +1,7 @@
 import os
 import unittest
 
-from core.packages import Package, resolve_package
+from core.packages import Package, _workspace_globs, _yaml_globs, find_workspace_root, resolve_package
 from core.shell import split_commands
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -72,6 +72,28 @@ class PackagesTest(unittest.TestCase):
         self.assertEqual(resolve("pnpm -F@fx/api test").name, "@fx/api")
         self.assertEqual(resolve("pnpm -w test").name, "@fx/root")
         self.assertEqual(resolve("pnpm --workspace-root test").name, "@fx/root")
+
+    def test_yaml_forms(self):
+        forms = os.path.join(HERE, "..", "fixtures", "yaml-forms")
+        for form in ("inline", "flow", "comment", "quoted"):
+            with self.subTest(form=form):
+                self.assertEqual(_workspace_globs(os.path.join(forms, form)), ['packages/*'])
+
+    def test_yaml_nested_packages_key_is_ignored(self):
+        self.assertEqual(_yaml_globs("catalogs:\n  packages:\n    - evil/*\npackages:\n  - 'packages/*'\n"),
+                         ['packages/*'])
+        self.assertEqual(_yaml_globs("catalogs:\n  foo:\n    packages: [evil/*]"), [])
+
+    def test_find_workspace_root_from_package_dir(self):
+        self.assertEqual(find_workspace_root(os.path.join(FX, "packages", "api", "src")), FX)
+        self.assertIsNone(find_workspace_root("/"))
+
+    def test_filter_dot_is_cwd_package(self):
+        cwd = os.path.join(FX, "packages", "api", "src")
+        self.assertEqual(resolve("pnpm --filter . test", cwd).name, "@fx/api")
+        self.assertEqual(resolve("pnpm --filter ../web test", os.path.join(FX, "packages", "api")).name,
+                         "@fx/web")
+        self.assertEqual(resolve("pnpm --filter '{packages/web}' test").name, "@fx/web")
 
     def test_nothing_found(self):
         self.assertIsNone(resolve("pnpm test", "/"))

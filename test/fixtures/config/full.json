@@ -1,8 +1,8 @@
 {
   "defaults": { "test": "pnpm exec vitest --run", "lint": "biome check", "typecheck": "pnpm typecheck" },
   "packages": {
-    "backend":  { "root": "packages/backend",  "testFor": "{dir}/{name}.test.{ext}" },
-    "frontend": { "root": "packages/frontend", "testFor": ["{dir}/{name}.test.{ext}", "{dir}/__tests__/{name}.test.{ext}"] }
+    "backend":  { "test": "pnpm exec vitest --run" },
+    "frontend": { "test": "pnpm exec vitest --run" }
   },
   "guard": { "mode": "block", "gatedActions": ["git commit", "git push", "rm -rf", "docker", "pnpm install", "prisma migrate", "gh pr"] },
   "heavy": ["build", "generate:*", "prisma *", "playwright", "docker compose logs"],
