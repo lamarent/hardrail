@@ -47,6 +47,32 @@ class PackagesTest(unittest.TestCase):
     def test_script_with_path_detected(self):
         self.assertEqual(resolve("pnpm --filter @fx/web test").test_script, "vitest src/")
 
+    def test_equals_forms(self):
+        self.assertEqual(resolve("pnpm --dir=packages/web test").name, "@fx/web")
+        self.assertEqual(resolve("pnpm -C=packages/web test").name, "@fx/web")
+        self.assertEqual(resolve("pnpm --filter=@fx/api test").name, "@fx/api")
+
+    def test_path_filter(self):
+        self.assertEqual(resolve("pnpm --filter ./packages/web test").name, "@fx/web")
+        self.assertEqual(resolve("pnpm --filter packages/api test").name, "@fx/api")
+
+    def test_fail_closed_is_all(self):
+        for cmd in ("pnpm --filter nope test", "pnpm -C packages/none test",
+                    "pnpm -C packages test", "pnpm -C ../../.. test", "pnpm -C ~ test",
+                    "pnpm --filter '!x' test", "pnpm --filter=!@fx/api test",
+                    "pnpm --filter '{packages/*}' test",
+                    "pnpm --filter @fx/api --filter @fx/web test",
+                    "pnpm --filter ../../.. test", "cd ../../.. && pnpm test",
+                    "pnpm --recursive=true test", "pnpm -rF @fx/api test",
+                    "pnpm -wr test", "pnpm -r -F @fx/api test"):
+            self.assertEqual(resolve(cmd), "all", cmd)
+
+    def test_cluster_value_and_root_flag(self):
+        self.assertEqual(resolve("pnpm -F @fx/api test").name, "@fx/api")
+        self.assertEqual(resolve("pnpm -F@fx/api test").name, "@fx/api")
+        self.assertEqual(resolve("pnpm -w test").name, "@fx/root")
+        self.assertEqual(resolve("pnpm --workspace-root test").name, "@fx/root")
+
     def test_nothing_found(self):
         self.assertIsNone(resolve("pnpm test", "/"))
 

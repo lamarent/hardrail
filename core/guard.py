@@ -60,7 +60,8 @@ def _cmd(s: Simple) -> List[str]:
 def _skip_opts(args: List[str]) -> List[str]:
     i = 0
     while i < len(args) and args[i].startswith('-'):
-        i += 2 if args[i] in _VALUE_FLAGS else 1
+        cluster = len(args[i]) > 2 and args[i][1] != '-' and args[i][-1] in 'FC' and '=' not in args[i]
+        i += 2 if args[i] in _VALUE_FLAGS or cluster else 1
     return args[i:]
 
 

@@ -6,7 +6,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 
 from core.shell import Simple
 
@@ -14,9 +14,10 @@ _ENV = re.compile(r'^[A-Za-z_]\w*=')
 _WRAPPERS = ('sudo', 'time', 'env', 'nohup', 'command', 'exec')
 _MANAGERS = ('pnpm', 'npm', 'yarn', 'bun')
 _ALL_FLAGS = ('-r', '--recursive', '--parallel')
+_ROOT_FLAGS = ('-w', '--workspace-root')
+_LONG_VALUE = ('--dir', '--filter', '--filter-prod', '--prefix', '--cwd')
 _DIR_FLAGS = ('-C', '--dir')
-_FILTER_FLAGS = ('--filter', '-F')
-_VALUE_FLAGS = ('--prefix', '--cwd', '--filter-prod')
+_FILTER_FLAGS = ('--filter', '-F', '--filter-prod')
 _SELECTOR = ('*', '...', '[')
 
 
@@ -51,14 +52,20 @@ def _package_at(root: str) -> Optional[Package]:
                    root, script if isinstance(script, str) else None)
 
 
-def _ancestor_package(start: str) -> Optional[Package]:
+def _within(path: str, root: str) -> bool:
+    path, root = os.path.abspath(path), os.path.abspath(root)
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def _ancestor_package(start: str, stop: Optional[str] = None) -> Optional[Package]:
+    """Nearest ancestor (inclusive) with a package.json; never climbs above `stop`."""
     cur = os.path.abspath(start)
     while True:
         pkg = _package_at(cur)
         if pkg:
             return pkg
         parent = os.path.dirname(cur)
-        if parent == cur:
+        if parent == cur or (stop is not None and cur == os.path.abspath(stop)):
             return None
         cur = parent
 
@@ -96,51 +103,86 @@ def _by_name(name: str, repo_root: str) -> Optional[Package]:
     return None
 
 
-def _manager_flags(argv: List[str]) -> List[str]:
-    """Option tokens between the package manager and its subcommand."""
+def _parse_flags(argv: List[str]) -> List[Tuple[str, Optional[str]]]:
+    """(flag, value) pairs between the package manager and its subcommand.
+
+    Handles `--flag value`, `--flag=value`, `-C=value`, and short clusters (`-rF value`).
+    """
     i = 0
     while i < len(argv) and (_ENV.match(argv[i]) or os.path.basename(argv[i]) in _WRAPPERS):
         i += 1
     if i >= len(argv) or os.path.basename(argv[i]) not in _MANAGERS:
         return []
-    out: List[str] = []
+    out: List[Tuple[str, Optional[str]]] = []
     i += 1
-    while i < len(argv) and argv[i].startswith('-'):
-        out.append(argv[i])
-        if argv[i] in _DIR_FLAGS + _FILTER_FLAGS + _VALUE_FLAGS and i + 1 < len(argv):
-            i += 1
-            out.append(argv[i])
+    while i < len(argv) and argv[i].startswith('-') and argv[i] != '-':
+        t = argv[i]
+        nxt = argv[i + 1] if i + 1 < len(argv) else ""
+        if t.startswith('--'):
+            name, eq, val = t.partition('=')
+            if name in _LONG_VALUE and not eq:
+                val, i = nxt, i + 1
+            out.append((name, val if (eq or name in _LONG_VALUE) else None))
+        elif '=' in t:
+            name, _, val = t.partition('=')
+            out.append((name, val))
+        else:
+            for k, letter in enumerate(t[1:], start=2):
+                if letter in 'FC':
+                    rest = t[k:]
+                    if not rest:
+                        rest, i = nxt, i + 1
+                    out.append(('-' + letter, rest))
+                    break
+                out.append(('-' + letter, None))
         i += 1
     return out
 
 
+def _filter_package(flt: str, repo_root: str) -> Union[Package, str]:
+    if any(x in flt for x in _SELECTOR) or '!' in flt or '{' in flt or '^' in flt:
+        return "all"
+    if flt.startswith(('./', '../', '/')) or ('/' in flt and '@' not in flt):
+        d = os.path.join(repo_root, flt)
+        pkg = _package_at(d) if _within(d, repo_root) else None
+    else:
+        pkg = _by_name(flt, repo_root)
+    return pkg or "all"
+
+
 def resolve_package(simple: Simple, cwd: str, config: dict, repo_root: str,
                     prev: Optional[Simple] = None) -> Union[Package, None, str]:
-    """Package a test command targets; "all" when it spans the workspace; None if unknown."""
-    flags = _manager_flags(simple.argv)
+    """Package a test command targets; "all" when it spans the workspace or cannot be resolved.
+
+    Fails closed: a lookup miss (unknown filter, directory without package.json, path outside
+    the repo) returns "all", never None. None only means no package.json above cwd.
+    """
     base = os.path.abspath(cwd)
+    inside = _within(base, repo_root)
     target: Optional[str] = None
-    filter_name: Optional[str] = None
-    i = 0
-    while i < len(flags):
-        f = flags[i]
-        value = flags[i + 1] if i + 1 < len(flags) else ""
-        if f in _ALL_FLAGS:
+    filters: List[str] = []
+    for flag, value in _parse_flags(simple.argv):
+        if flag in _ALL_FLAGS:
             return "all"
-        if f in _DIR_FLAGS:
-            target = value
-            i += 1
-        elif f in _FILTER_FLAGS or f.startswith('--filter='):
-            filter_name = f.split('=', 1)[1] if f.startswith('--filter=') else value
-            i += 0 if f.startswith('--filter=') else 1
-            if any(s in filter_name for s in _SELECTOR):
-                return "all"
-        i += 1
-    if filter_name is not None:
-        return _by_name(filter_name, repo_root)
-    if target is not None:
-        return _ancestor_package(os.path.join(base, _expand(target)))
-    if prev is not None and len(prev.argv) >= 2 and prev.argv[0] == "cd" \
+        if flag in _ROOT_FLAGS:
+            target = repo_root
+        elif flag in _DIR_FLAGS:
+            target = value or ""
+        elif flag in _FILTER_FLAGS:
+            filters.append(value or "")
+    if len(filters) > 1:
+        return "all"
+    if filters:
+        return _filter_package(filters[0], repo_root)
+    if target is None and prev is not None and len(prev.argv) >= 2 and prev.argv[0] == "cd" \
             and prev.payload_of == simple.payload_of:
         base = os.path.join(base, _expand(prev.argv[1]))
-    return _ancestor_package(base)
+        if inside and not _within(base, repo_root):
+            return "all"
+        return _ancestor_package(base, repo_root if inside else None)
+    if target is not None:
+        d = os.path.join(base, _expand(target))
+        if inside and not _within(d, repo_root):
+            return "all"
+        return _package_at(d) or "all"
+    return _ancestor_package(base, repo_root if inside else None)
