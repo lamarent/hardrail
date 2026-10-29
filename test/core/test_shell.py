@@ -1,6 +1,6 @@
 import unittest
 
-from core.shell import ParseError, _heredoc_at, split_commands
+from core.shell import ParseError, _drop_redirects, _heredoc_at, _payload_of, split_commands
 
 
 class SplitTests(unittest.TestCase):
@@ -123,6 +123,22 @@ class SplitTests(unittest.TestCase):
 
     def test_here_string_into_cat_dropped(self):
         self.assertEqual(len(split_commands('cat <<< "git push"')), 1)
+
+    def test_sep_recorded(self):
+        s = split_commands("ls | grep x && pwd")
+        self.assertEqual([x.sep for x in s], ['', '|', '&&'])
+
+    def test_drop_redirects(self):
+        self.assertEqual(_drop_redirects(['bash', '2>/dev/null', '>', 'out', '<<<', 'x']), ['bash', '<<<', 'x'])
+
+    def test_keywords_stripped(self):
+        self.assertEqual(split_commands("if true; then git push -f; fi")[1].argv, ['git', 'push', '-f'])
+
+    def test_shell_scan_double_dash(self):
+        self.assertEqual(_payload_of(['bash', '-c', '--', 'ls']), ('ls', 'sh -c'))
+
+    def test_pipe_payload(self):
+        self.assertEqual(split_commands("echo 'ls -a' | bash")[-1].argv, ['ls', '-a'])
 
 
 if __name__ == '__main__':

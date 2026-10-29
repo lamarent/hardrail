@@ -7,19 +7,31 @@ import shlex
 _SEPS = ';&|\n'
 _SENT = {c: chr(0xE000 + i) for i, c in enumerate(_SEPS)}
 _UNSENT = {v: k for k, v in _SENT.items()}
-_SHELLS = ('bash', 'sh', 'zsh', 'dash')
+_SHELLS = ('bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'ash', 'busybox')
 _HEREDOC_PH = '_heredoc_'
 _HD_STOP = ' \t\r\n;&|<>()'
 _C_FLAG = re.compile(r'-[A-Za-z]*c[A-Za-z]*')
+_KEYWORDS = ('if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', '{', 'time', 'coproc')
+_CLOSERS = ('fi', 'done', 'esac', '}')
+_FUNC_DEF = re.compile(r'^\w+\(\)\{?$')
+_VAR_WORD = re.compile(r'^"?\$\{?[\w@*]+\}?"?$')
+_ASSIGN = re.compile(r'^[A-Za-z_]\w*=')
+_REDIR = re.compile(r'^\d*[<>]{1,2}&?\S*$')
+_BARE_REDIR = ('<', '>', '>>', '2>', '&>', '&>>')
+_MAX_INPUT = 65536
+_PIPE_ERR = "command piped into a shell cannot be inspected; run it as a script file"
 
 
 class Simple:
-    __slots__ = ("argv", "raw", "payload_of")  # payload_of: None | "sh -c" | "eval" | "heredoc" | "subst"
+    # payload_of: None | "sh -c" | "eval" | "heredoc" | "subst" | "pipe"
+    # sep: separator token before this simple at its level ('' for the first); not compared.
+    __slots__ = ("argv", "raw", "payload_of", "sep")
 
-    def __init__(self, argv, raw, payload_of=None):
+    def __init__(self, argv, raw, payload_of=None, sep=''):
         self.argv = argv
         self.raw = raw
         self.payload_of = payload_of
+        self.sep = sep
 
     def __eq__(self, other):
         return isinstance(other, Simple) and (self.argv, self.raw, self.payload_of) == \
@@ -157,22 +169,44 @@ def _spans(p):
 
 
 def _unwrap(argv):
-    """Drop subshell parens and `case` patterns so the command words come first."""
-    if argv and argv[0].startswith('(') and argv[0] != '(':
-        argv[0] = argv[0][1:]
-    elif argv and argv[0] == '(':
-        argv = argv[1:]
-    if argv and argv[-1].endswith(')') and '(' not in argv[-1]:
-        argv[-1] = argv[-1][:-1]
-        if not argv[-1]:
+    """Drop reserved words, group braces, function heads, subshell parens and `case`
+    patterns so the command words come first.
+
+    Returns (argv, closed): `closed` is True when a group closer (`)`, `}`, `done`,
+    `fi`, `esac`) was removed, i.e. the words end a compound command.
+    """
+    closed = False
+    while argv:
+        w = argv[0]
+        if w in _CLOSERS:
+            closed = True
+            argv = argv[1:]
+        elif w in _KEYWORDS or w.endswith('{') or _FUNC_DEF.match(w):
+            argv = argv[1:]
+            if w == 'time' and argv[:1] == ['-p']:
+                argv = argv[1:]
+        elif w == 'function' and len(argv) > 1:
+            argv = argv[2:]
+        elif w.startswith('('):
+            argv = [w[1:]] + argv[1:] if w != '(' else argv[1:]
+        else:
+            break
+    while argv:
+        w = argv[-1]
+        if w in _CLOSERS:
             argv = argv[:-1]
+        elif w.endswith(')') and '(' not in w:
+            argv = argv[:-1] + ([w[:-1]] if w[:-1] else [])
+        else:
+            break
+        closed = True
     if argv and argv[0] == 'case' and 'in' in argv:
         k = argv.index('in')
         j = next((m for m in range(k + 1, len(argv)) if argv[m].endswith(')')), None)
         argv = argv[j + 1:] if j is not None else []
     elif argv and len(argv[0]) > 1 and argv[0].endswith(')') and '(' not in argv[0]:
         argv = argv[1:]
-    return argv
+    return argv, closed
 
 
 def _split_plain(text):
@@ -190,52 +224,126 @@ def _split_plain(text):
     result = []
     cur = []
     first = last = 0
+    sep = ''
+    closed = False  # the previous group ended a compound command
 
     def flush():
-        if cur:
-            if use_spans:
-                raw = text[idx[first]:idx[last - 1] + 1]
-            else:
-                raw = ' '.join(cur)
-            argv = _unwrap(list(cur))
-            if argv:
-                result.append(Simple(argv=argv, raw=raw))
-            cur.clear()
+        nonlocal closed
+        if use_spans:
+            raw = text[idx[first]:idx[last - 1] + 1]
+        else:
+            raw = ' '.join(cur)
+        argv, was_closed = _unwrap(list(cur))
+        sp = sep[:2]
+        if argv:
+            # A compound command's output piped into a shell cannot be traced to one simple.
+            if closed and _is_pipe(sp) and _is_shell_reader(argv):
+                raise ParseError(_PIPE_ERR)
+            result.append(Simple(argv=argv, raw=raw, sep=sp))
+        closed = was_closed
+        cur.clear()
 
     for k, tok in enumerate(tokens):
         if tok and all(c in _SEPS for c in tok):
-            flush()
+            if cur:
+                flush()
+                sep = tok
+            else:
+                sep += tok
         else:
             if not cur and use_spans:
                 first = spans[k][0]
             if use_spans:
                 last = spans[k][1]
             cur.append(_restore(tok))
-    flush()
+    if cur:
+        flush()
     return result
 
 
-def _shell_scan(argv, j):
-    """Scan the flags after the shell word at argv[j].
+def _is_pipe(sep):
+    """True for `|`, `|&` or a pipe followed by a newline (not `||`)."""
+    return sep[:1] == '|' and sep[1:2] != '|'
 
-    Returns ('c', payload_index) for a -c flag, ('flags', len) if only flags
-    follow or -s (read from stdin) is given, else None. The argument after -o / -O is skipped.
+
+def _drop_redirects(argv):
+    """argv without redirect words (`2>/dev/null`, `>&2`, `&>f`) and the target after a
+    bare `<`, `>`, `>>`, `2>`, `&>`. Here-strings (`<<<`) are kept."""
+    out = []
+    skip = False
+    for w in argv:
+        if skip:
+            skip = False
+        elif w in _BARE_REDIR:
+            skip = True
+        elif not w.startswith('<<<') and (_REDIR.match(w) or w.startswith('&>')):
+            pass
+        else:
+            out.append(w)
+    return out
+
+
+def _clean(argv):
+    """Redirect-free argv for shell detection.
+
+    A shell whose argv carries a substitution word (`bash <(...)`, `bash < <(...)`,
+    `sh -c "$(...)"`) runs text that cannot be inspected: ParseError.
     """
+    if _SUBST_PH in argv:
+        k = argv.index(_SUBST_PH)
+        if any(os.path.basename(w) in _SHELLS for w in argv[:k]):
+            raise ParseError("script from a process substitution cannot be inspected; "
+                             "run it as a script file")
+    return _drop_redirects(argv)
+
+
+def _shell_scan(argv, j):
+    """Scan the options after the shell word at argv[j].
+
+    Returns ('c', payload_index) for a -c flag (the payload is the first non-option word,
+    or the word after `--`), ('flags', index) if only options follow or -s (read from
+    stdin) is given, else None. The value after -o / -O / +o / +O / --rcfile /
+    --init-file is skipped.
+    """
+    n = len(argv)
     k = j + 1
-    while k < len(argv) and argv[k].startswith('-'):
-        if argv[k] in ('-o', '-O'):
+    want_c = want_s = False
+    while k < n:
+        w = argv[k]
+        if w == '--':
+            k += 1
+            break
+        if w in ('--rcfile', '--init-file'):
             k += 2
             continue
-        if _C_FLAG.fullmatch(argv[k]) and k + 1 < len(argv):
-            return 'c', k + 1
-        if argv[k] == '-s':
-            return 'flags', k
-        k += 1
-    return ('flags', k) if k >= len(argv) else None
+        if w.startswith('--'):
+            k += 1
+            continue
+        if len(w) < 2 or w[0] not in '-+':
+            break
+        if w[0] == '-' and _C_FLAG.fullmatch(w):
+            want_c = True
+        elif w[0] == '-' and 's' in w[1:]:
+            want_s = True
+        k += 2 if w[-1] in 'oO' else 1
+    if want_c:
+        return ('c', k) if k < n else None
+    if want_s or k >= n:
+        return 'flags', k
+    return None
 
 
 def _payload_of(argv):
-    """Return (text, kind) for the first sh -c / eval payload in argv, else None."""
+    """Return (text, kind) for the first sh -c / eval payload in argv, else None.
+
+    A variable as the command word (`$cmd`, `"$@"`) raises ParseError.
+    """
+    argv = _clean(argv)
+    k = 0
+    while k < len(argv) and _ASSIGN.match(argv[k]):
+        k += 1
+    if k < len(argv) and _VAR_WORD.match(argv[k]):
+        raise ParseError("command word is a variable; write the command literally")
     if argv and argv[0] == 'eval' and len(argv) > 1:
         return ' '.join(argv[1:]), 'eval'
     for j, w in enumerate(argv):
@@ -253,14 +361,36 @@ def _payload_of(argv):
 
 
 def _is_shell_reader(argv):
-    if not argv:
-        return False
+    argv = _clean(argv)
     for j, w in enumerate(argv):
         if os.path.basename(w) in _SHELLS:
             r = _shell_scan(argv, j)
             if r and r[0] == 'flags':
                 return True
     return False
+
+
+_ECHO_OPT = re.compile(r'^-[neE]+$')
+
+
+def _pipe_payload(argv):
+    """Text that `echo` / `printf` with literal arguments writes into a shell, else
+    ParseError: the shell would run output that cannot be inspected."""
+    words = _drop_redirects(argv)
+    if not words or words[0] not in ('echo', 'printf') or _SUBST_PH in argv:
+        raise ParseError(_PIPE_ERR)
+    cmd, words = words[0], words[1:]
+    if cmd == 'echo':
+        while words and _ECHO_OPT.match(words[0]):
+            words = words[1:]
+    elif words and words[0].startswith('-'):
+        raise ParseError(_PIPE_ERR)
+    # Escapes and printf formats change the text; quoting them is not attempted.
+    if any('\\' in w or (cmd == 'printf' and '%' in w) for w in words):
+        raise ParseError(_PIPE_ERR)
+    text = ' '.join(words)
+    _check_size(text)
+    return text
 
 
 def _in_arith(text, i):
@@ -526,11 +656,24 @@ def _extract_heredocs(cmd):
 
 
 def split_commands(cmd):
+    if len(cmd.encode('utf-8', 'replace')) > _MAX_INPUT:
+        raise ParseError("command too long to inspect; run it as a script file")
     cmd, substs = _extract_substs(cmd)
     rest, bodies = _extract_heredocs(cmd)
     out = []
+    prev = None
     for s in _split_plain(rest):
         out.append(s)
+        if _is_pipe(s.sep) and _is_shell_reader(s.argv):
+            # The shell runs what the previous stage writes: only literal echo / printf
+            # text is known; a heredoc body was inspected already.
+            if prev is None:
+                raise ParseError(_PIPE_ERR)
+            if _HEREDOC_PH not in prev.argv:
+                for inner in split_commands(_pipe_payload(prev.argv)):
+                    inner.payload_of = inner.payload_of or 'pipe'
+                    out.append(inner)
+        prev = s
         p = _payload_of(s.argv)
         if p:
             for inner in split_commands(p[0]):
