@@ -1,7 +1,5 @@
 """Claude Code PreToolUse shim: stdin JSON -> core.guard.decide -> exit code."""
-import json
-import os
-import sys
+import json, os, sys
 
 # Two layouts: copied (.claude/hardrail/{core/,pre_bash.py}) and repo (adapters/claude/pre_bash.py).
 _here = os.path.dirname(os.path.abspath(__file__))
@@ -20,7 +18,9 @@ try:
     for key, fmt in (("_load_error", "config ignored (%s), using defaults"), ("_load_warning", "%s")):
         if config.get(key):
             sys.stderr.write("hardrail: %s\n" % (fmt % config[key]))
-    d = decide(event["tool_input"]["command"], cwd, config)
+    cmd = (event.get("tool_input") or {}).get("command")
+    if not isinstance(cmd, str) or not cmd: sys.exit(0)  # not a command event
+    d = decide(cmd, cwd, config)
 except Exception as e:  # fail open: an internal error must never block the agent
     sys.stderr.write("hardrail: guard error: %s\n" % " ".join(str(e).split())[:200])
     sys.exit(0)
