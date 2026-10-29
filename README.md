@@ -344,6 +344,27 @@ Planned, in the order of the design document's build order:
 The core knows no agent: an adapter is a shim of about 30 lines that translates input and
 exit codes, holds no policy, and adds no guard tests.
 
+### Long-term direction
+
+hardrail aims to be the one enforcement layer a repository keeps for every coding agent that
+works in it: rules live in the repo, run the same under any agent, and the repo can tell from
+its own data whether they help.
+
+| Version | Delivers | Proof it is done |
+|---|---|---|
+| 0.1 | guard core + Claude Code adapter (this release) | the hook blocks what prose could not; bench, leak gate and CI green |
+| 0.2 | usable on an unknown repo in minutes: `init`, `check`, `upgrade`, keyword list rendered from config, CI scoped-test mapping | acceptance on a fresh public TypeScript monorepo |
+| 0.3 | core as a platform: rule registry, `Decision.why`, corpus as JSONL data, JSON stdin/stdout adapter contract; `codex` adapter | the second adapter adds zero policy and zero guard tests |
+| 0.4 | self-improvement with evidence: counts-only metrics outside the repo, `hardrail report`, the loop *missed command → corpus row → rule* | three weekly numbers from the adopting repo: miss rate, false-block rate, hook p95 |
+| 0.5 | process discipline: worktree guard and setup, rule rendering, optional modules | each module has a config switch and its own tests |
+| 1.0 | plugin packaging, versioned fixtures per agent release, nightly contract test, contributor docs | a stranger can add a rule with one corpus row and one test |
+
+Only three numbers matter long term, and each is produced by the adopting repo itself: miss
+rate (a dangerous command allowed), false-block rate (a legitimate command blocked), and hook
+p95. The design document carries the architecture changes planned for 0.3 (rule registry,
+evidence on every decision, corpus as data, JSON adapter contract, manifest for the copied
+layout, versioned config).
+
 ## Design notes
 
 - **Standard library only.** The hook runs on every tool call in every clone; it cannot

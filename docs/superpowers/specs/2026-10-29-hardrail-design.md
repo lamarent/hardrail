@@ -290,6 +290,51 @@ third tier.
 8. Acceptance on the stranger repo; then README and the first catalog entry.
 9. Optional modules, in the order the owner uses them most.
 
+## Roadmap and long-term direction
+
+**Vision.** hardrail is the one enforcement layer a repository keeps for every coding agent
+that works in it. Rules live in the repo, not in a person's head or a single agent's config;
+they run the same under Claude Code, Codex or a later agent; and the repo can tell, from its
+own data, whether the rules help.
+
+Milestones, ordered by value on a real repo, not by the order the code is easiest to write:
+
+| Version | Delivers | Proof it is done |
+|---|---|---|
+| 0.1 | guard core + Claude Code adapter (build steps 1, 7) | hook blocks what prose could not; bench, leak gate and CI green |
+| 0.2 | usable on an unknown repo in minutes: `init`, `check`, `upgrade` with a content-hash manifest, pre-filter keywords rendered from config, CI scoped-test mapping (steps 2, 3) | acceptance on a fresh public TypeScript monorepo, by hand first, then by `init` |
+| 0.3 | core becomes a platform: rule registry, `Decision.why`, corpus as data, JSON stdin/stdout contract for adapters; `codex` adapter | the `codex` adapter adds zero policy and zero guard tests |
+| 0.4 | self-improvement with evidence: counts-only metrics outside the repo, `hardrail report`, the loop *missed command in a transcript → corpus row → rule* (step 6) | three numbers per week from the adopting repo: miss rate, false-block rate, hook p95 |
+| 0.5 | process discipline: worktree guard and setup, rule rendering, optional modules (steps 4, 5, 9) | each module has an on/off switch in config and its own tests |
+| 1.0 | plugin packaging, versioned fixtures per agent release, nightly contract test, contributor docs | a stranger can add a rule with a corpus row and a test, and nothing else |
+
+**Long-term measures.** Only three, each produced by the adopting repo itself, none copied
+from a private workspace: miss rate (dangerous command allowed), false-block rate (a legitimate
+command blocked), hook p95. A release that moves none of them is not a release.
+
+## Architecture hardening (for 0.3)
+
+The current split (core / adapters / test) is kept. What changes is boundaries and data:
+
+1. **Rule as a registered module.** `core/rules/<name>.py` exports `RULE = Rule(id, order,
+   probe, message)`; `decide` runs the registry in `order`. Adding a rule never edits
+   `guard.py`; each rule has its own test file.
+2. **Decision carries evidence.** `Decision.why` names the token or flag that fired. Needed by
+   metrics, by reviewers, and by a `--explain` flag in the CLI.
+3. **Corpus is data.** The guard table moves to `test/corpus/*.jsonl` (`command, cwd, expect,
+   tags`). The same file feeds unit tests, the adversarial bench and every adapter's contract
+   test.
+4. **Adapter contract is JSON.** Core reads a request and writes a decision on stdin/stdout
+   (`hardrail decide --json`); an adapter only maps the agent's event format to that JSON.
+   Done before the second adapter exists, so the first one is not special.
+5. **Copied layout has a manifest.** `.claude/hardrail/MANIFEST.json` lists version and the
+   hash of every file; `check` diffs it, `upgrade` replaces by hash. This is how a repo
+   survives both a hardrail release and an agent release.
+6. **Config carries a version.** `"version": 1`; the loader refuses an unknown version with a
+   clear message instead of merging silently, and `upgrade` migrates.
+
+Items 1 and 2 come first: worktree guard, metrics and `init` all depend on them.
+
 ## Repo layout
 
 ```
