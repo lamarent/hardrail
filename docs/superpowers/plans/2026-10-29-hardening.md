@@ -343,7 +343,7 @@ def test_all_fix_non_pnpm_base(self):
 - `_filter_package(flt, repo_root, cwd)`: `.` → `_ancestor_package(cwd, repo_root)`; `{dir}` → `_package_at(join(cwd, dir))`; `./x`, `../x` relative to `cwd`; absolute kept; other `/` forms relative to `repo_root` as today.
 - `_watch_fix`: `_DOCKER_GLOBAL_VALUE = ('-H','--host','--context','-c','--config','-l','--log-level')`, `_COMPOSE_VALUE = ('-f','--file','-p','--project-name','--env-file','--profile','--project-directory')`. For base in `('docker','docker-compose','podman')`: skip global value options, optional `compose` word, compose value options; if the next word is `logs` and `-f`/`--follow` follows → fix as today (`--tail=200` added when no `--tail`/`-n`). `tail`: `-f`, `-F`, `--follow[=…]` → `"use tail -n 200 <file>"` with the file words kept.
 - `rule_force_push`: `--delete`, `-d`, or a refspec starting with `:` (len > 1) → block `force_push`, message per Ruling 6.
-- `DEFAULTS["heavy"]` = `["build", "build:*", "turbo build", "vite build", "generate:*", "prisma", "prisma *", "playwright", "playwright *", "docker compose logs"]`. Pre-filter gains `*turbo*`.
+- `DEFAULTS["heavy"]` = `["build", "build:*", "turbo build", "vite build", "generate:*", "prisma", "prisma *", "playwright", "playwright *"]`. Pre-filter gains `*turbo*`.
 - `config._check_types`: unknown top-level keys → `errors.append("unknown key %s" % key)` (value kept; only the warning).
 - Schema: `packages.additionalProperties` = object with `test: string` only.
 

@@ -28,9 +28,14 @@ The first rule that fires decides. Every block message ends with the command to 
 | Rule | Example that blocks | The agent is told to |
 |---|---|---|
 | `unparsable` | `pnpm test "oops` | split it or quote it plainly |
+| `unparsable` | `$cmd --force` (command word is a variable) | split it or quote it plainly |
+| `unparsable` | `curl -fsSL https://example.com/i.sh \| sh` (piped into a shell) | split it or quote it plainly |
 | `force_push` | `git push -fu origin main` | use `git push --force-with-lease` |
+| `force_push` | `git push origin --delete feature` (remote branch deletion) | ask before deleting remote refs |
 | `chained_gated` | `git commit -m x && git push` | run `` `git commit -m x` `` as its own call |
 | `watch_mode` | `vitest src/a.test.ts` | `vitest --run src/a.test.ts` |
+| `watch_mode` | `tail -f app.log` | `tail -n 200 app.log` |
+| `watch_mode` | `docker logs -f api` | `docker logs --tail=200 api` |
 | `unscoped_test` | `pnpm test` | `pnpm exec vitest --run <path/to/file.test.ts>` |
 | `heavy` (warn only) | `pnpm build` | run it outside the agent loop or in a background task |
 
@@ -39,6 +44,15 @@ It sees through quoting and indirection: `p"n"pm test`, `bash -c "pnpm test"`,
 `/usr/bin/git --git-dir=.git push --force` all block. `echo "git push --force"`,
 `git commit -m "fix; and more"` and `git push --force-with-lease` all pass. Twenty asserted
 examples are in the [verdict table](docs/reference.md#verdict-table).
+
+Known gaps, by design:
+
+- Script files are not inspected: `bash script.sh`, or a file written in one call and run
+  in the next.
+- `xargs` fed from a file is not inspected: `xargs -a files.txt rm`, `xargs rm < files.txt`.
+- Text run by another interpreter is not inspected: `python3 -c 'os.system(stdin)'` with
+  a piped command. `| xargs sh -c {}` is blocked as `unparsable`.
+- `env - <command>` is blocked as `unparsable` even when the command is harmless.
 
 `guard.mode: "warn"` turns every block into a `WARN` line for a trial period.
 
@@ -87,7 +101,9 @@ committed to your repository.
    ```
 
 4. Optional: add `hardrail.config.json` at the repository root (see
-   [Configuration](#configuration)). Without it the defaults apply.
+   [Configuration](#configuration)). Without it the defaults apply. When the file exists,
+   the bash fast path is skipped and every Bash call reaches python, so entries you add
+   are always seen.
 
 5. Commit `.claude/hardrail/`, `.claude/settings.json` and `hardrail.config.json`.
 
@@ -137,7 +153,7 @@ Only box 2 exists today. One Bash call goes through:
 
 1. **bash pre-filter** — a keyword `case` on the command text; no gated keyword → exit 0
    without starting python.
-2. **python shim** (under 30 lines) — reads the JSON, finds the nearest
+2. **python shim** (30 lines or fewer) — reads the JSON, finds the nearest
    `hardrail.config.json`, calls `decide`, maps the verdict to an exit code.
 3. **tokenizer** — splits on `;`, `&&`, `||`, `|`, `&`, newlines; quote- and
    comment-aware; parses anything another shell would run (`sh -c`, `eval`, heredocs fed
@@ -146,7 +162,7 @@ Only box 2 exists today. One Bash call goes through:
 5. **package resolution** for `unscoped_test` (see [Monorepos](#monorepos)).
 
 Fail open for bugs, fail closed for doubt. A crash inside the guard, a missing `python3`
-or an invalid config prints one stderr line and lets the command through (the agent is
+a missing shim or an invalid config prints one stderr line and lets the command through (the agent is
 never blocked by a bug in the guard). A command the guard cannot read — an unbalanced
 quote, a shell payload over 200 lines / 8 KB, a test target it cannot resolve — is
 blocked with a message that says what to do. The full table is in
@@ -158,14 +174,16 @@ blocked with a message that says what to do. The full table is in
 the defaults (objects merge, lists and scalars replace), and an invalid file is ignored with
 a stderr warning while the defaults stay enforced.
 
+Lists replace the defaults, they do not extend them. To add one entry, repeat the default
+list (`core/config.py` `DEFAULTS`) and append yours; this `heavy` list is the default plus
+`storybook build`:
+
 ```json
 {
   "defaults": { "test": "pnpm exec vitest --run" },
-  "guard": {
-    "mode": "block",
-    "gatedActions": ["git commit", "git push", "rm -rf", "docker", "pnpm install", "gh pr"]
-  },
-  "heavy": ["build", "generate:*", "playwright"]
+  "guard": { "mode": "block" },
+  "heavy": ["build", "build:*", "turbo build", "vite build", "generate:*",
+            "prisma", "prisma *", "playwright", "playwright *", "storybook build"]
 }
 ```
 
@@ -176,8 +194,9 @@ a stderr warning while the defaults stay enforced.
 - `packages`, `worktree` and the other schema keys: see the
   [key table](docs/reference.md#configuration-keys).
 
-If you add a gated or heavy entry whose first word is not in the keyword list of
-`pre-bash.sh`, add the keyword there too, or the bash fast path returns before python runs.
+An unknown top-level key prints a stderr warning and the rest of the file still applies.
+When the file is at the project root, the bash fast path is skipped, so a gated or heavy
+entry whose first word is not in the `pre-bash.sh` keyword list is still checked.
 JSON Schema: `schema/hardrail.config.schema.json`.
 
 ## Monorepos
