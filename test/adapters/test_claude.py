@@ -12,8 +12,8 @@ FIXTURE = os.path.join(ROOT, "test", "fixtures", "pnpm-monorepo")
 
 def run_hook(command=None, raw=None, path=None, hook_cwd=FIXTURE):
     if raw is None:
-        raw = json.dumps({"tool_name": "Bash", "tool_input": {"command": command},
-                          "cwd": hook_cwd, "session_id": "s"})
+        raw = json.dumps({"session_id": "s", "cwd": hook_cwd, "hook_event_name": "PreToolUse",
+                          "tool_name": "Bash", "tool_input": {"command": command}})
     env = dict(os.environ)
     if path is not None:
         env["PATH"] = path
@@ -49,6 +49,16 @@ class ClaudeHookTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0)
         self.assertIn("guard disabled", r.stderr)
         self.assertEqual(r.stdout, "")
+
+    def test_embedded_brace_quote_does_not_hide_command(self):
+        r = run_hook("echo '\"}, ' ; pnpm test")
+        self.assertEqual(r.returncode, 2)
+        self.assertTrue(r.stderr.startswith("BLOCKED [unscoped_test]"), r.stderr)
+
+    def test_embedded_brace_quote_before_force_push(self):
+        r = run_hook("echo '\"},' && git push -f")
+        self.assertEqual(r.returncode, 2)
+        self.assertTrue(r.stderr.startswith("BLOCKED [force_push]"), r.stderr)
 
     def test_warn_exit_0(self):
         r = run_hook("pnpm build")

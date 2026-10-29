@@ -45,8 +45,9 @@ ALLOW = Decision("allow", "", "")
 
 
 def _glob_match(pattern, text):
-    """Full-match glob where `*` spans anything; every other character is literal."""
-    return re.fullmatch(".*".join(re.escape(p) for p in pattern.split("*")), text, re.S) is not None
+    """Full-match glob: `*` spans anything, `?` is one character, the rest is literal (no `[seq]`)."""
+    parts = (".".join(re.escape(q) for q in p.split("?")) for p in pattern.split("*"))
+    return re.fullmatch(".*".join(parts), text, re.S) is not None
 
 
 def _strip_env(argv):

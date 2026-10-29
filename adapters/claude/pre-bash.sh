@@ -2,11 +2,10 @@
 # Claude Code PreToolUse hook for Bash. Cheap keyword pre-filter, then the python guard.
 set -u
 input=$(cat)
-# Pre-filter on the command text only, so cwd and session fields never decide the path.
+# Pre-filter scans everything after the first "command": key (keeps more text, never less).
 # No "command": key found -> fall through to python (fail closed).
 cmd=${input#*\"command\":}
 [ "$cmd" = "$input" ] && cmd=test
-cmd=${cmd%\"\},*}  # drop the sibling fields after tool_input (last `"},`); no match leaves it whole
 case "$cmd" in
   *test*|*vitest*|*jest*|*push*|*commit*|*rm*|*docker*|*prisma*|*generate*|*install*|*build*|*playwright*|*logs*|*yarn*|*bun*|*npx*|*npm*) ;;
   *) exit 0 ;;

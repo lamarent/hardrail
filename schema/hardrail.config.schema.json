@@ -55,6 +55,7 @@
     },
     "heavy": {
       "type": "array",
+      "description": "glob: `*` and `?` only",
       "items": {
         "type": "string"
       }

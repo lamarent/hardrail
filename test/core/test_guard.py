@@ -3,7 +3,7 @@ import os
 import unittest
 
 from core.config import DEFAULTS
-from core.guard import decide
+from core.guard import _glob_match, decide
 from test.core.guard_table import ROWS
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -21,6 +21,12 @@ class GuardTest(unittest.TestCase):
             with self.subTest(command=command):
                 d = decide(command, os.path.join(ROOT, *cwd) if cwd else "/tmp", self.config)
                 self.assertEqual((d.action, d.rule), (action, rule), d.message)
+
+    def test_glob_match_star_and_question(self):
+        self.assertTrue(_glob_match("pnpm bui?d*", "pnpm build --prod"))
+        self.assertFalse(_glob_match("pnpm bui?d", "pnpm buiild"))
+        self.assertTrue(_glob_match("a.b", "a.b"))
+        self.assertFalse(_glob_match("a.b", "axb"))
 
     def test_warn_mode_downgrades_block(self):
         self.config["guard"]["mode"] = "warn"

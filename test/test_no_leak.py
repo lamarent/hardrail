@@ -20,8 +20,10 @@ def _tracked():
 
 def _denylist():
     path = os.environ.get('HARDRAIL_DENYLIST')
-    if not path or not os.path.isfile(path):
+    if not path:
         return []
+    if not os.path.isfile(path):
+        raise AssertionError('HARDRAIL_DENYLIST is set but the file is missing: ' + path)
     with open(path, encoding='utf-8') as fh:
         return [ln.strip().lower() for ln in fh if ln.strip()]
 
