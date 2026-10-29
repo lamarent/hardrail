@@ -1,0 +1,60 @@
+import json
+import os
+import tempfile
+import unittest
+
+from core import config
+
+FIXTURES = os.path.join(os.path.dirname(__file__), "..", "fixtures", "config")
+
+
+def fixture_root(name):
+    """Make a temp repo root whose config is the named fixture."""
+    root = tempfile.mkdtemp()
+    with open(os.path.join(FIXTURES, name), encoding="utf-8") as src:
+        data = src.read()
+    with open(os.path.join(root, "hardrail.config.json"), "w", encoding="utf-8") as dst:
+        dst.write(data)
+    return root
+
+
+class ConfigTest(unittest.TestCase):
+    def test_minimal_gets_defaults(self):
+        cfg = config.load(fixture_root("minimal.json"))
+        self.assertEqual(cfg["guard"]["mode"], "block")
+        self.assertIn("git push", cfg["guard"]["gatedActions"])
+
+    def test_full_overrides(self):
+        cfg = config.load(fixture_root("full.json"))
+        self.assertIn("backend", cfg["packages"])
+        self.assertEqual(cfg["guard"]["mode"], "block")
+        self.assertNotIn("git reset", cfg["guard"]["gatedActions"])
+        self.assertTrue(cfg["worktree"]["required"])
+        self.assertEqual(cfg["defaults"]["lint"], "biome check")
+
+    def test_deep_merge_keeps_default_keys(self):
+        root = tempfile.mkdtemp()
+        with open(os.path.join(root, "hardrail.config.json"), "w", encoding="utf-8") as f:
+            json.dump({"guard": {"mode": "warn"}}, f)
+        cfg = config.load(root)
+        self.assertEqual(cfg["guard"]["mode"], "warn")
+        self.assertIn("git push", cfg["guard"]["gatedActions"])
+
+    def test_missing_file_returns_copy(self):
+        cfg = config.load(tempfile.mkdtemp())
+        self.assertEqual(cfg, config.DEFAULTS)
+        cfg["guard"]["gatedActions"].append("x")
+        self.assertNotIn("x", config.DEFAULTS["guard"]["gatedActions"])
+
+    def test_find_root_walks_up(self):
+        root = fixture_root("minimal.json")
+        deep = os.path.join(root, "a", "b")
+        os.makedirs(deep)
+        self.assertEqual(os.path.realpath(config.find_root(deep)), os.path.realpath(root))
+
+    def test_find_root_none(self):
+        self.assertIsNone(config.find_root(tempfile.mkdtemp()))
+
+
+if __name__ == "__main__":
+    unittest.main()

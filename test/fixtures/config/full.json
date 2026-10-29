@@ -1,0 +1,15 @@
+{
+  "defaults": { "test": "pnpm exec vitest --run", "lint": "biome check", "typecheck": "pnpm typecheck" },
+  "packages": {
+    "backend":  { "root": "packages/backend",  "testFor": "{dir}/{name}.test.{ext}" },
+    "frontend": { "root": "packages/frontend", "testFor": ["{dir}/{name}.test.{ext}", "{dir}/__tests__/{name}.test.{ext}"] }
+  },
+  "guard": { "mode": "block", "gatedActions": ["git commit", "git push", "rm -rf", "docker", "pnpm install", "prisma migrate", "gh pr"] },
+  "heavy": ["build", "generate:*", "prisma *", "playwright", "docker compose logs"],
+  "worktree": { "required": true, "dir": ".worktrees", "include": [".env*", "certs/", "lefthook-local.yml"] },
+  "ci": { "alwaysFull": ["**/handlers/**", "**/di/**"], "skip": ["**/*.md", "docs/**"], "base": "main" },
+  "codegen": [{ "run": "pnpm generate:openapi", "verify": "git diff --exit-code -- openapi/" }],
+  "conventionChecks": [],
+  "modules": { "cleanup": true, "board": false, "standup": false, "sessionResume": false, "codeReview": false, "archTest": false },
+  "language": { "reply": "en", "published": "en" }
+}
