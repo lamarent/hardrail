@@ -23,8 +23,8 @@ DEFAULTS = {
     "worktree": {"required": False, "dir": ".worktrees", "include": []},
 }
 
-# Top-level keys the schema documents but the guard does not read.
-_SCHEMA_ONLY_KEYS = ("ci", "codegen", "conventionChecks", "modules", "language")
+# Top-level keys the schema documents but the guard does not read; accepted silently.
+_SCHEMA_ONLY_KEYS = ("$schema", "ci", "codegen", "conventionChecks", "modules", "language")
 
 
 def _merge(base, override):
@@ -46,7 +46,8 @@ def _fallback(reason):
 
 def load(repo_root):
     """Merged config. A broken file never disables the guard: it falls back to DEFAULTS
-    and records why under the `_load_error` key."""
+    and records why under the `_load_error` key. Unknown top-level keys are not fatal: the
+    config is applied and `_load_warning` names them."""
     path = os.path.join(repo_root, CONFIG_NAME)
     if not os.path.isfile(path):
         return copy.deepcopy(DEFAULTS)
@@ -62,17 +63,15 @@ def load(repo_root):
     _check_types(DEFAULTS, out, "", errors)
     if errors:
         out["_load_error"] = "; ".join(errors)[:200]
+    unknown = [k for k in data if k not in DEFAULTS and k not in _SCHEMA_ONLY_KEYS]
+    if unknown:
+        out["_load_warning"] = ("unknown config key %s ignored" % ", ".join(unknown))[:200]
     return out
 
 
 def _check_types(defaults, cfg, prefix, errors):
     """Every dict/list/str default must keep its type (list items stay str); a wrong one
-    reverts to the default and the reason goes to `errors`. Unknown top-level keys are kept
-    and only reported."""
-    if not prefix:
-        for key in cfg:
-            if key not in defaults and key not in _SCHEMA_ONLY_KEYS:
-                errors.append("unknown key %s" % key)
+    reverts to the default and the reason goes to `errors`."""
     for key, default in defaults.items():
         if not isinstance(default, (dict, list, str)):
             continue

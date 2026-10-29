@@ -108,6 +108,32 @@ class ClaudeHookTest(unittest.TestCase):
                 self.assertTrue(lines[0].startswith("hardrail: config ignored (guard"), r.stderr)
                 self.assertTrue(lines[1].startswith("BLOCKED [chained_gated]"), r.stderr)
 
+    def _config_dir(self, text):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "hardrail.config.json"), "w", encoding="utf-8") as f:
+            f.write(text)
+        return d
+
+    def test_unknown_key_warns_and_applies_config(self):
+        r = run_hook("pnpm test", hook_cwd=self._config_dir('{"bogus": 1, "guard": {"mode": "warn"}}'))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        lines = r.stderr.splitlines()
+        self.assertEqual(lines[0], "hardrail: unknown config key bogus ignored")
+        self.assertTrue(lines[1].startswith("WARN [unscoped_test]"), r.stderr)
+
+    def test_schema_key_is_silent(self):
+        r = run_hook("pnpm test", hook_cwd=self._config_dir('{"$schema": "x.json"}'))
+        self.assertEqual(r.returncode, 2)
+        self.assertTrue(r.stderr.startswith("BLOCKED [unscoped_test]"), r.stderr)
+
+    def test_tail_and_podman_follow_reach_the_guard(self):
+        for command in ("tail -f x", "podman logs -f x"):
+            with self.subTest(command=command):
+                r = run_hook(command)
+                self.assertEqual(r.returncode, 2)
+                self.assertTrue(r.stderr.startswith("BLOCKED [watch_mode]"), r.stderr)
+
     def test_snippet_uses_project_dir(self):
         with open(os.path.join(ROOT, "adapters", "claude", "hooks.snippet.json"), encoding="utf-8") as f:
             snippet = json.load(f)

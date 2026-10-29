@@ -1,7 +1,7 @@
 import os
 import unittest
 
-from core.packages import Package, _workspace_globs, find_workspace_root, resolve_package
+from core.packages import Package, _workspace_globs, _yaml_globs, find_workspace_root, resolve_package
 from core.shell import split_commands
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -78,6 +78,11 @@ class PackagesTest(unittest.TestCase):
         for form in ("inline", "flow", "comment", "quoted"):
             with self.subTest(form=form):
                 self.assertEqual(_workspace_globs(os.path.join(forms, form)), ['packages/*'])
+
+    def test_yaml_nested_packages_key_is_ignored(self):
+        self.assertEqual(_yaml_globs("catalogs:\n  packages:\n    - evil/*\npackages:\n  - 'packages/*'\n"),
+                         ['packages/*'])
+        self.assertEqual(_yaml_globs("catalogs:\n  foo:\n    packages: [evil/*]"), [])
 
     def test_find_workspace_root_from_package_dir(self):
         self.assertEqual(find_workspace_root(os.path.join(FX, "packages", "api", "src")), FX)

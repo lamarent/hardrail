@@ -94,9 +94,21 @@ class ConfigTest(unittest.TestCase):
         self.assertIsNone(config.find_root(tempfile.mkdtemp()))
 
     def test_unknown_key_warns(self):
-        cfg = config.load(self._write('{"bogus": 1}'))
-        self.assertIn("unknown key bogus", cfg["_load_error"])
-        self.assertEqual(cfg["bogus"], 1)
+        cfg = config.load(self._write('{"bogus": 1, "guard": {"mode": "warn"}}'))
+        self.assertEqual(cfg["_load_warning"], "unknown config key bogus ignored")
+        self.assertNotIn("_load_error", cfg)
+        self.assertEqual(cfg["guard"]["mode"], "warn")
+
+    def test_schema_key_is_silent(self):
+        cfg = config.load(self._write('{"$schema": "x.json"}'))
+        self.assertNotIn("_load_warning", cfg)
+        self.assertNotIn("_load_error", cfg)
+
+    def test_skip_list_matches_schema(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "..", "schema", "hardrail.config.schema.json")
+        with open(path, encoding="utf-8") as f:
+            props = set(json.load(f)["properties"])
+        self.assertEqual(set(config._SCHEMA_ONLY_KEYS), props - set(config.DEFAULTS))
 
     def test_schema_keys_are_known(self):
         cfg = config.load(fixture_root("full.json"))

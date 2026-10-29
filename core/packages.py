@@ -101,9 +101,11 @@ def _unquote(word):
 def _yaml_globs(text):
     """`packages:` from pnpm-workspace.yaml: a block list, an inline list or a multi-line flow list."""
     lines = [_strip_comment(line).rstrip() for line in text.splitlines()]
+    first = next((line for line in lines if line.strip()), '')
+    top = len(first) - len(first.lstrip())  # only keys at the first key's indent are top level
     for i, line in enumerate(lines):
         m = _YAML_KEY.match(line)
-        if not m:
+        if not m or len(line) - len(line.lstrip()) != top:
             continue
         rest = m.group(2).strip()
         if rest.startswith('['):

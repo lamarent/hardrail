@@ -37,7 +37,7 @@ ROWS = [
     ("pnpm test:watch", "block", "watch_mode"),
     ("docker compose logs -f api", "block", "watch_mode"),
     ("docker compose logs --follow api", "block", "watch_mode"),
-    ("docker compose logs --tail=100 api", "allow", ""),
+    ("docker compose logs --tail=100 api", "warn", "heavy"),  # word-prefix heavy match
     ("playwright test --ui", "block", "watch_mode"),
     ("pnpm test:e2e --debug", "block", "watch_mode"),
     # chained gated actions
@@ -342,7 +342,7 @@ ROWS = [
     ("tail -fn 20 app.log", "block", "watch_mode"),
     ("tail --follow=name app.log", "block", "watch_mode"),
     ("podman logs -f api", "block", "watch_mode"),
-    ("docker compose logs api", "allow", ""),
+    ("docker compose logs api", "warn", "heavy"),
     ("git push origin :", "allow", ""),
     ("git push origin :main", "block", "force_push"),
     ("git push --delete origin main", "block", "force_push"),
@@ -351,4 +351,14 @@ ROWS = [
     ("vite build", "warn", "heavy"),
     ("pnpm build:prod", "warn", "heavy"),
     ("pnpm exec playwright test", "warn", "heavy"),
+    # review: fix round 1 of workspace, watch, push
+    ("git push -ud origin x", "block", "force_push"),
+    ("git push -vd origin x", "block", "force_push"),
+    ("git push -u origin x", "allow", ""),
+    ("turbo run build", "warn", "heavy"),
+    ("turbo build --filter web", "warn", "heavy"),
+    ("pnpm build --mode prod", "warn", "heavy"),
+    ("vite build --mode prod", "warn", "heavy"),
+    ("pnpm builder", "allow", ""),
+    ("tail -f -- -weird.log", "block", "watch_mode"),
 ]

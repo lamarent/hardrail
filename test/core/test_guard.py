@@ -112,6 +112,8 @@ class GuardTest(unittest.TestCase):
     def test_watch_fix_tail_keeps_files(self):
         self.assertIn("use tail -n 200 a.log b.log", self._msg("tail -F a.log b.log"))
         self.assertIn("use tail -n 200 a.log", self._msg("tail -fn 20 a.log"))
+        self.assertIn("use tail -n 200 -- -weird.log", self._msg("tail -f -- -weird.log"))
+        self.assertTrue(self._msg("tail -f").endswith("use tail -n 200 FILE"))
 
     def test_push_delete_message(self):
         self.assertIn("deleting a remote branch is blocked; ask before deleting remote refs",

@@ -11,6 +11,7 @@ from core.shell import ParseError, _is_pipe, scan_opts, split_commands
 
 _PATH_ARG = re.compile(r'\.(test|spec)\.(ts|tsx|js|jsx)$')
 _SHORT_F = re.compile(r'^-[A-Za-z]*f[A-Za-z]*$')
+_SHORT_D = re.compile(r'^-[A-Za-z]*d[A-Za-z]*$')
 _RUNNERS = ('vitest', 'jest')
 _PKG_MANAGERS = ('pnpm', 'npm', 'yarn', 'bun')
 _GIT_VALUE_OPTS = ('-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path',
@@ -228,7 +229,7 @@ def rule_force_push(simples, config, cwd="."):
             if a in ('--force', '--mirror') or _SHORT_F.match(a) or (a.startswith('+') and len(a) > 1):
                 return _result("block", "force_push",
                                "force push is blocked; use git push --force-with-lease", config)
-            if a in ('--delete', '-d') or (a.startswith(':') and len(a) > 1):
+            if a == '--delete' or _SHORT_D.match(a) or (a.startswith(':') and len(a) > 1):
                 return _result("block", "force_push", _DELETE_MSG, config)
     return None
 
@@ -316,6 +317,9 @@ def _tail_fix(c):
     while i < len(c):
         a = c[i]
         i += 1
+        if a == '--':
+            files += ['--'] + c[i:] if any(w.startswith('-') for w in c[i:]) else c[i:]
+            break
         if a == '--follow' or a.startswith('--follow='):
             follow = True
         elif a in _TAIL_VALUE:
@@ -326,7 +330,7 @@ def _tail_fix(c):
                 i += 1
         elif not a.startswith('-'):
             files.append(a)
-    return "use tail -n 200 " + (' '.join(files) or '<file>') if follow else None
+    return "use tail -n 200 " + (' '.join(files) or 'FILE') if follow else None
 
 
 def _watch_fix(s, config, cwd):
@@ -424,9 +428,11 @@ def _heavy_form(argv):
 
 
 def rule_heavy(simples, config, cwd="."):
+    """An entry matches the whole command or a word prefix of it; `turbo run x` reads as `x`."""
     for s in simples:
-        form = _heavy_form(_cmd(s))
-        if any(_glob_match(g, form) for g in config.get("heavy", [])):
+        c = _cmd(s)
+        form = _heavy_form(c[2:] if c[:2] == ['turbo', 'run'] else c)
+        if any(_glob_match(g, form) or _glob_match(g + ' *', form) for g in config.get("heavy", [])):
             return Decision("warn", "heavy",
                             f"heavy command; run it outside the agent loop or in a background task: {s.raw}")
     return None
