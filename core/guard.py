@@ -8,6 +8,8 @@ import shlex
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
 
+from core.config import find_root
+from core.packages import Package, resolve_package
 from core.shell import ParseError, Simple, split_commands
 
 _ENV = re.compile(r'^[A-Za-z_]\w*=')
@@ -30,12 +32,7 @@ class Decision:
 
 
 ALLOW = Decision("allow", "", "")
-Rule = Callable[[List[Simple], dict], Optional[Decision]]
-
-
-def resolve_package(simple, cwd, config, repo_root):
-    """Stub until package resolution lands."""
-    return None
+Rule = Callable[[List[Simple], dict, str], Optional[Decision]]
 
 
 def _strip_env(argv: List[str]) -> Tuple[List[str], List[str]]:
@@ -137,7 +134,7 @@ def _unparsable(config: dict) -> Decision:
     return _result("block", "unparsable", "cannot parse command; split it or quote it plainly", config)
 
 
-def rule_force_push(simples: List[Simple], config: dict) -> Optional[Decision]:
+def rule_force_push(simples: List[Simple], config: dict, cwd: str = ".") -> Optional[Decision]:
     for s in simples:
         c = _cmd(s)
         if c[:2] != ['git', 'push']:
@@ -158,7 +155,7 @@ def _is_gated(s: Simple, config: dict) -> bool:
     return False
 
 
-def rule_chained_gated(simples: List[Simple], config: dict) -> Optional[Decision]:
+def rule_chained_gated(simples: List[Simple], config: dict, cwd: str = ".") -> Optional[Decision]:
     chains = {}
     for s in simples:
         chains.setdefault(s.payload_of, []).append(s)
@@ -187,7 +184,7 @@ def _watch_mode(s: Simple, config: dict) -> bool:
     return name.startswith('test:') and name.endswith('watch')
 
 
-def rule_watch_mode(simples: List[Simple], config: dict) -> Optional[Decision]:
+def rule_watch_mode(simples: List[Simple], config: dict, cwd: str = ".") -> Optional[Decision]:
     for s in simples:
         if _watch_mode(s, config):
             return _result("block", "watch_mode",
@@ -196,16 +193,44 @@ def rule_watch_mode(simples: List[Simple], config: dict) -> Optional[Decision]:
     return None
 
 
-def rule_unscoped_test(simples: List[Simple], config: dict) -> Optional[Decision]:
-    for s in simples:
+def _own_path_token(script: str) -> bool:
+    return any('/' in t or _PATH_ARG.search(t) for t in script.split() if not t.startswith('-'))
+
+
+def _unscoped_decision(s: Simple, prev: Optional[Simple], name: str, args: List[str],
+                       config: dict, cwd: str) -> Optional[Decision]:
+    if '--help' in args:
+        return None
+    root = find_root(cwd) or cwd
+    pkg = resolve_package(s, cwd, config, root, prev=prev)
+    base = config['defaults']['test']
+    if pkg == "all":
+        fix = f"{base.replace('exec', '--filter <name> exec', 1)} {_first_path(args) or _PLACEHOLDER}"
+        return _result("block", "unscoped_test",
+                       f"this runs every workspace package; target one package: {fix}", config)
+    if isinstance(pkg, Package) and name not in _RUNNERS and pkg.test_script \
+            and _own_path_token(pkg.test_script):
+        rel = os.path.relpath(pkg.root, os.path.abspath(root))
+        path = _first_path(args) or _PLACEHOLDER
+        fix = f"pnpm -C {rel} exec vitest --run {path}"
+        return _result("block", "unscoped_test",
+                       f"the package test script already has a path, so extra paths do not scope it; use: {fix}",
+                       config)
+    if _has_path(args):
+        return None
+    fix = f"{base} {_first_path(args) or _PLACEHOLDER}"
+    return _result("block", "unscoped_test", f"unscoped test run; scope it: {fix}", config)
+
+
+def rule_unscoped_test(simples: List[Simple], config: dict, cwd: str = ".") -> Optional[Decision]:
+    for i, s in enumerate(simples):
         hit = _runner(_strip_env(s.argv)[1], config)
         if not hit:
             continue
-        args = hit[1]
-        if '--help' in args or _has_path(args):
-            continue
-        fix = f"{config['defaults']['test']} {_first_path(args) or _PLACEHOLDER}"
-        return _result("block", "unscoped_test", f"unscoped test run; scope it: {fix}", config)
+        prev = simples[i - 1] if i > 0 else None
+        d = _unscoped_decision(s, prev, hit[0], hit[1], config, cwd)
+        if d:
+            return d
     return None
 
 
@@ -217,7 +242,7 @@ def _heavy_form(argv: List[str]) -> str:
     return ' '.join(argv)
 
 
-def rule_heavy(simples: List[Simple], config: dict) -> Optional[Decision]:
+def rule_heavy(simples: List[Simple], config: dict, cwd: str = ".") -> Optional[Decision]:
     for s in simples:
         form = _heavy_form(_cmd(s))
         if any(fnmatch.fnmatchcase(form, g) for g in config.get("heavy", [])):
@@ -235,7 +260,7 @@ def decide(command: str, cwd: str, config: dict) -> Decision:
     except ParseError:
         return _unparsable(config)
     for rule in RULES:
-        d = rule(simples, config)
+        d = rule(simples, config, cwd)
         if d:
             return d
     return ALLOW

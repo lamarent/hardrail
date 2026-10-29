@@ -1,4 +1,6 @@
-"""Table of (command, expected_action, expected_rule) rows for the guard."""
+"""Rows of (command, expected_action, expected_rule[, cwd relative to repo root]) for the guard."""
+
+FX = "test/fixtures/pnpm-monorepo"
 
 ROWS = [
     # unscoped test runs
@@ -61,4 +63,10 @@ ROWS = [
     ("pnpm generate:orval", "warn", "heavy"),
     ("pnpm test \"oops", "block", "unparsable"),
     ('git commit -m "修正"', "allow", ""),
+    # workspace package resolution
+    ("pnpm -r test", "block", "unscoped_test", FX),
+    ("pnpm --filter '*' test src/a.test.ts", "block", "unscoped_test", FX),
+    ("pnpm --filter @fx/api test src/a.test.ts", "allow", "", FX),
+    ("pnpm -C packages/web test src/a.test.ts", "block", "unscoped_test", FX),
+    ("cd packages/web && pnpm test src/a.test.ts", "block", "unscoped_test", FX),
 ]
