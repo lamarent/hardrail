@@ -150,4 +150,16 @@ ROWS = [
     ("pnpm -r build", "warn", "heavy"),
     ("pnpm --filter @fx/api build", "warn", "heavy"),
     ("pnpm -C x build", "warn", "heavy"),
+    # review: quoting and heredocs
+    ("cat <<EOF\n$(git push -f)\nEOF", "block", "force_push"),
+    ("cat <<EOF\n`git push -f`\nEOF", "block", "force_push"),
+    ("x=$(cat <<EOF\n$(git push -f)\nEOF\n)", "block", "force_push"),
+    ("cat <<'EOF'\n$(git push -f)\nEOF", "allow", ""),
+    ('cat <<E"OF"\nhi\nEOF\ngit push -f', "block", "force_push"),
+    ("cat <<'E'OF\nhi\nEOF\ngit push -f", "block", "force_push"),
+    ("cat <<\\EOF\ngit push -f\nEOF", "allow", ""),
+    ("bash <<'E-OF'\ngit push -f\nE-OF", "block", "force_push"),
+    ("git push $'-f'", "block", "unparsable"),
+    ("bash -c $'git push -f'", "block", "unparsable"),
+    ("echo `echo \\`git push -f\\``", "block", "force_push"),
 ]

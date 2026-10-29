@@ -8,7 +8,8 @@ _SEPS = ';&|\n'
 _SENT = {c: chr(0xE000 + i) for i, c in enumerate(_SEPS)}
 _UNSENT = {v: k for k, v in _SENT.items()}
 _SHELLS = ('bash', 'sh', 'zsh', 'dash')
-_HEREDOC = re.compile(r'<<-?\s*(["\']?)([A-Za-z_]\w*)\1')
+_HEREDOC_PH = '_heredoc_'
+_HD_STOP = ' \t\r\n;&|<>()'
 _C_FLAG = re.compile(r'-[A-Za-z]*c[A-Za-z]*')
 
 
@@ -41,6 +42,7 @@ _SUBST_PH = '_subst_'
 _MAX_SUBST_DEPTH = 20
 _TOO_DEEP = "payload too deep or too large to inspect; run it as a script file"
 _CASE = re.compile(r'\bcase\s')
+_BQ_ESC = re.compile(r'\\([`\\$])')  # inside `...`, \` \\ \$ lose the backslash
 
 
 def _check_size(text):
@@ -80,6 +82,8 @@ def _protect(cmd):
             if c == '"':
                 q = None
         else:
+            if c == '$' and i + 1 < n and cmd[i + 1] in '\'"':
+                raise ParseError("$'...' quoting is not supported; write the string plainly")
             if c == '\\' and i + 1 < n:
                 nxt = cmd[i + 1]
                 if nxt == '\n':
@@ -259,8 +263,63 @@ def _is_shell_reader(argv):
     return False
 
 
+def _in_arith(text, i):
+    """True when index i sits inside an unclosed `((` on its line (`<<` is a shift there)."""
+    s = text[text.rfind('\n', 0, i) + 1:i]
+    return s.count('((') > s.count('))')
+
+
+def _heredoc_at(text, i):
+    """Parse the heredoc word after `<<` / `<<-` at text[i].
+
+    Returns (delimiter, quoted, end) with quotes and backslashes removed, or None for an
+    empty word. A `$` or backtick in the word raises ParseError.
+    """
+    n = len(text)
+    j = i + 2
+    if text.startswith('-', j):
+        j += 1
+    while j < n and text[j] in ' \t':
+        j += 1
+    start = j
+    word = []
+    quoted = False
+    while j < n:
+        c = text[j]
+        if c in _HD_STOP:
+            break
+        if c in '$`':
+            raise ParseError("heredoc delimiter with $ or ` is not supported")
+        if c in '\'"':
+            k = j + 1
+            while k < n and text[k] != c:
+                k += 2 if c == '"' and text[k] == '\\' else 1
+            if k >= n:
+                raise ParseError("unbalanced quote in heredoc delimiter")
+            part = text[j + 1:k]
+            if '$' in part or '`' in part:
+                raise ParseError("heredoc delimiter with $ or ` is not supported")
+            word.append(part.replace('\\', '') if c == '"' else part)
+            quoted = True
+            j = k + 1
+        elif c == '\\':
+            if j + 1 < n and text[j + 1] != '\n':
+                word.append(text[j + 1])
+            quoted = True
+            j += 2
+        else:
+            word.append(c)
+            j += 1
+    if j == start:
+        return None
+    return ''.join(word), quoted, j
+
+
 def _find_heredoc(line, q):
-    """First `<<` outside quotes, comments and escapes. Returns (match, quote_state)."""
+    """First `<<` outside quotes, comments and escapes.
+
+    Returns ((start, delimiter, quoted, end) or None, quote_state).
+    """
     i, n = 0, len(line)
     while i < n:
         c = line[i]
@@ -282,9 +341,9 @@ def _find_heredoc(line, q):
             elif c == '#' and (i == 0 or line[i - 1] in ' \t;&|('):
                 return None, q
             elif line.startswith('<<', i) and not line.startswith('<<<', i) and (i == 0 or line[i - 1] != '<'):
-                m = _HEREDOC.match(line, i)
-                if m:
-                    return m, q
+                h = None if _in_arith(line, i) else _heredoc_at(line, i)
+                if h:
+                    return (i,) + h, q
         i += 1
     return None, q
 
@@ -304,25 +363,30 @@ def _pipes_to_shell(after):
     return False
 
 
-def _skip_bodies(cmd, i, pending):
+def _skip_bodies(cmd, i, pending, n):
     """cmd[i] is a newline after heredoc operators; skip their bodies.
 
-    Returns the index of the newline that ends the last delimiter line (or len(cmd)).
+    Returns (index of the newline that ends the last delimiter line (or n),
+    [(body_start, body_end, quoted)]).
     """
-    n = len(cmd)
-    for delim in pending:
+    spans = []
+    for delim, quoted in pending:
+        b0, b1 = i + 1, n
         while i < n:
-            j = cmd.find('\n', i + 1)
+            j = cmd.find('\n', i + 1, n)
             j = n if j < 0 else j
             line = cmd[i + 1:j]
-            i = j
             if line.strip() == delim:
+                b1 = max(i, b0)
+                i = j
                 break
+            i = j
+        spans.append((b0, b1, quoted))
     del pending[:]
-    return i
+    return i, spans
 
 
-def _walk(cmd, i, close, level=0):
+def _walk(cmd, i, close, level=0, dq=False, end=None):
     """Scan cmd from i for command substitutions.
 
     `close` is None at the top level, else ')' or '`' for the substitution being scanned.
@@ -331,11 +395,14 @@ def _walk(cmd, i, close, level=0):
     Process substitutions `<(...)` / `>(...)` count too. Single quotes and heredoc bodies
     are skipped; `$((` arithmetic is not a command, but substitutions inside it are returned.
     A body containing `case` runs to the last `)` of the string (patterns end in `)`).
+    Unquoted heredoc bodies are scanned like double-quoted text (`dq=True`): quotes and `#`
+    are literal there. Each entry also carries its opener (`` ` `` or `$`/`<`/`>`).
+    `end` bounds the scan (default: the whole string).
     Nesting deeper than _MAX_SUBST_DEPTH raises ParseError.
     """
     if level > _MAX_SUBST_DEPTH:
         raise ParseError(_TOO_DEEP)
-    n = len(cmd)
+    n = len(cmd) if end is None else end
     q = None
     depth = 0
     pending = []
@@ -352,22 +419,29 @@ def _walk(cmd, i, close, level=0):
             continue
         if close == '`' and c == '`':
             return i + 1, found
-        if c == '`' or cmd.startswith('$(', i) or (q is None and cmd.startswith(('<(', '>('), i)):
+        if c == '`' or cmd.startswith('$(', i, n) or \
+                (q is None and not dq and cmd.startswith(('<(', '>('), i, n)):
             body = i + (1 if c == '`' else 2)
-            end, inner = _walk(cmd, body, '`' if c == '`' else ')', level + 1)
-            if cmd.startswith('$((', i):
+            stop, inner = _walk(cmd, body, '`' if c == '`' else ')', level + 1, end=n)
+            if cmd.startswith('$((', i, n):
                 found.extend(inner)
             else:
-                if c != '`' and _CASE.search(cmd, body, end - 1):
-                    end = cmd.rfind(')') + 1
-                found.append((i, body, end - 1, end))
-            i = end
+                if c != '`' and _CASE.search(cmd, body, stop - 1):
+                    stop = cmd.rfind(')', 0, n) + 1
+                found.append((i, body, stop - 1, stop, c))
+            i = stop
+            continue
+        if dq:
+            i += 1
             continue
         if q == '"':
             if c == '"':
                 q = None
         elif c == '\n' and pending:
-            i = _skip_bodies(cmd, i, pending)
+            i, spans = _skip_bodies(cmd, i, pending, n)
+            for b0, b1, quoted in spans:
+                if not quoted:
+                    found.extend(_walk(cmd, b0, None, level + 1, dq=True, end=b1)[1])
             continue
         elif c in '\'"':
             q = c
@@ -376,10 +450,10 @@ def _walk(cmd, i, close, level=0):
                 i += 1
             continue
         elif cmd.startswith('<<', i) and not cmd.startswith('<<<', i):
-            m = _HEREDOC.match(cmd, i)
-            if m:
-                pending.append(m.group(2))
-                i = m.end()
+            h = None if _in_arith(cmd[:n], i) else _heredoc_at(cmd[:n], i)
+            if h:
+                pending.append(h[:2])
+                i = h[2]
                 continue
             i += 2
             continue
@@ -400,15 +474,18 @@ def _extract_substs(cmd):
     if '$(' not in cmd and '`' not in cmd and '<(' not in cmd and '>(' not in cmd:
         return cmd, []
     found = _walk(cmd, 0, None)[1]
-    if sum(end - start for start, _, _, end in found) > _MAX_BODY_BYTES:
+    if sum(f[3] - f[0] for f in found) > _MAX_BODY_BYTES:
         raise ParseError(_TOO_DEEP)
     out = []
     bodies = []
     last = 0
-    for start, b0, b1, end in found:
+    for start, b0, b1, end, opener in found:
         out.append(cmd[last:start])
         out.append(_SUBST_PH)
-        bodies.append(cmd[b0:b1])
+        body = cmd[b0:b1]
+        if opener == '`':
+            body = _BQ_ESC.sub(r'\1', body)
+        bodies.append(body)
         last = end
     out.append(cmd[last:])
     return ''.join(out), bodies
@@ -422,20 +499,21 @@ def _extract_heredocs(cmd):
     i = 0
     while i < len(lines):
         line = lines[i]
-        m, q = _find_heredoc(line, q)
-        if not m:
+        h, q = _find_heredoc(line, q)
+        if not h:
             kept.append(line)
             i += 1
             continue
         j = i + 1
         body = []
-        while j < len(lines) and lines[j].strip() != m.group(2):
+        start, delim, _, end = h
+        while j < len(lines) and lines[j].strip() != delim:
             body.append(lines[j])
             j += 1
         i = j + 1
-        kept.append(line[:m.start()] + line[m.end():])
-        prefix = _split_plain(line[:m.start()])
-        if (prefix and _is_shell_reader(prefix[-1].argv)) or _pipes_to_shell(line[m.end():]):
+        kept.append(line[:start] + ' ' + _HEREDOC_PH + ' ' + line[end:])
+        prefix = _split_plain(line[:start])
+        if (prefix and _is_shell_reader(prefix[-1].argv)) or _pipes_to_shell(line[end:]):
             text = '\n'.join(body)
             if len(body) > _MAX_BODY_LINES or len(text.encode('utf-8', 'replace')) > _MAX_BODY_BYTES:
                 raise ParseError(_TOO_LARGE)

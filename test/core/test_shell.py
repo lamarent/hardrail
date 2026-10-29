@@ -1,6 +1,6 @@
 import unittest
 
-from core.shell import ParseError, split_commands
+from core.shell import ParseError, _heredoc_at, split_commands
 
 
 class SplitTests(unittest.TestCase):
@@ -38,7 +38,7 @@ class SplitTests(unittest.TestCase):
         self.assertEqual(str(cm.exception), "payload too large to inspect; run it as a script file")
 
     def test_heredoc_into_cat_dropped(self):
-        self.assertEqual(self.argvs('cat <<EOF\npnpm test\nEOF'), [['cat']])
+        self.assertEqual(self.argvs('cat <<EOF\npnpm test\nEOF'), [['cat', '_heredoc_']])
 
     def test_find_exec_semicolon(self):
         self.assertEqual(len(split_commands('find . -name "*.orig" -exec rm {} \\;')), 1)
@@ -107,7 +107,7 @@ class SplitTests(unittest.TestCase):
 
     def test_substitution_heredoc_body_not_scanned(self):
         s = split_commands("git commit -m \"$(cat <<'EOF'\nit's ) done; ok\nEOF\n)\"")
-        self.assertEqual([x.argv for x in s], [['git', 'commit', '-m', '_subst_'], ['cat']])
+        self.assertEqual([x.argv for x in s], [['git', 'commit', '-m', '_subst_'], ['cat', '_heredoc_']])
 
     def test_unbalanced_substitution_raises(self):
         with self.assertRaises(ParseError):
@@ -127,3 +127,30 @@ class SplitTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+    def test_heredoc_at_plain(self):
+        self.assertEqual(_heredoc_at('<<EOF x', 0), ('EOF', False, 5))
+
+    def test_heredoc_at_partly_quoted(self):
+        self.assertEqual(_heredoc_at('<<E"OF"\n', 0), ('EOF', True, 7))
+
+    def test_heredoc_at_backslash(self):
+        self.assertEqual(_heredoc_at('<<\\EOF\n', 0), ('EOF', True, 6))
+
+    def test_heredoc_at_dash_delim(self):
+        self.assertEqual(_heredoc_at("<<'E-OF'\n", 0)[0], 'E-OF')
+
+    def test_heredoc_at_dollar_raises(self):
+        with self.assertRaises(ParseError):
+            _heredoc_at('<<$X\n', 0)
+
+    def test_unquoted_body_subst_is_split(self):
+        s = split_commands("cat <<EOF\n$(git push -f)\nEOF")
+        self.assertIn(['git', 'push', '-f'], [x.argv for x in s])
+
+    def test_dollar_quote_raises(self):
+        with self.assertRaises(ParseError):
+            split_commands("git push $'-f'")
+
+    def test_nested_escaped_backtick(self):
+        self.assertIn(['git', 'push', '-f'], [x.argv for x in split_commands("echo `echo \\`git push -f\\``")])
