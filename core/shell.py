@@ -34,6 +34,11 @@ class ParseError(Exception):
     pass
 
 
+_MAX_BODY_LINES = 200
+_MAX_BODY_BYTES = 8192
+_TOO_LARGE = "payload too large to inspect; run it as a script file"
+
+
 def _s(c):
     return _SENT.get(c, c)
 
@@ -268,7 +273,10 @@ def _extract_heredocs(cmd):
         kept.append(line[:m.start()] + line[m.end():])
         prefix = _split_plain(line[:m.start()])
         if prefix and _is_shell_reader(prefix[-1].argv):
-            bodies.append('\n'.join(body))
+            text = '\n'.join(body)
+            if len(body) > _MAX_BODY_LINES or len(text.encode('utf-8', 'replace')) > _MAX_BODY_BYTES:
+                raise ParseError(_TOO_LARGE)
+            bodies.append(text)
     return '\n'.join(kept), bodies
 
 

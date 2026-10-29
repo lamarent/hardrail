@@ -62,6 +62,7 @@ ROWS = [
     ("pnpm build", "warn", "heavy"),
     ("pnpm generate:orval", "warn", "heavy"),
     ("pnpm test \"oops", "block", "unparsable"),
+    ("bash <<'EOF'\n" + "echo x\n" * 201 + "EOF", "block", "unparsable"),
     ('git commit -m "修正"', "allow", ""),
     # workspace package resolution
     ("pnpm -r test", "block", "unscoped_test", FX),

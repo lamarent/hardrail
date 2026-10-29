@@ -154,8 +154,8 @@ def _result(action, rule, msg, config):
     return Decision(action, rule, msg)
 
 
-def _unparsable(config):
-    return _result("block", "unparsable", "cannot parse command; split it or quote it plainly", config)
+def _unparsable(config, why=None):
+    return _result("block", "unparsable", why or "cannot parse command; split it or quote it plainly", config)
 
 
 def rule_force_push(simples, config, cwd="."):
@@ -281,8 +281,8 @@ RULES = [rule_force_push, rule_chained_gated, rule_watch_mode,
 def decide(command, cwd, config):
     try:
         simples = split_commands(command)
-    except ParseError:
-        return _unparsable(config)
+    except ParseError as e:
+        return _unparsable(config, str(e) if str(e).startswith("payload too large") else None)
     for rule in RULES:
         d = rule(simples, config, cwd)
         if d:

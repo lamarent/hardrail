@@ -30,6 +30,13 @@ class SplitTests(unittest.TestCase):
         self.assertEqual(s[-1].argv, ['pnpm', 'test'])
         self.assertEqual(s[-1].payload_of, 'heredoc')
 
+    def test_heredoc_body_cap(self):
+        body = lambda n: "bash <<'EOF'\n" + "\n".join(["echo x"] * n) + "\nEOF"
+        self.assertEqual(len(split_commands(body(200))), 201)
+        with self.assertRaises(ParseError) as cm:
+            split_commands(body(201))
+        self.assertEqual(str(cm.exception), "payload too large to inspect; run it as a script file")
+
     def test_heredoc_into_cat_dropped(self):
         self.assertEqual(self.argvs('cat <<EOF\npnpm test\nEOF'), [['cat']])
 
