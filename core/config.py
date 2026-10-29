@@ -18,9 +18,13 @@ DEFAULTS = {
             "bun install", "bun add",
         ],
     },
-    "heavy": ["build", "generate:*", "prisma *", "playwright", "docker compose logs"],
+    "heavy": ["build", "build:*", "turbo build", "vite build", "generate:*", "prisma", "prisma *",
+              "playwright", "playwright *", "docker compose logs"],
     "worktree": {"required": False, "dir": ".worktrees", "include": []},
 }
+
+# Top-level keys the schema documents but the guard does not read.
+_SCHEMA_ONLY_KEYS = ("ci", "codegen", "conventionChecks", "modules", "language")
 
 
 def _merge(base, override):
@@ -63,7 +67,12 @@ def load(repo_root):
 
 def _check_types(defaults, cfg, prefix, errors):
     """Every dict/list/str default must keep its type (list items stay str); a wrong one
-    reverts to the default and the reason goes to `errors`."""
+    reverts to the default and the reason goes to `errors`. Unknown top-level keys are kept
+    and only reported."""
+    if not prefix:
+        for key in cfg:
+            if key not in defaults and key not in _SCHEMA_ONLY_KEYS:
+                errors.append("unknown key %s" % key)
     for key, default in defaults.items():
         if not isinstance(default, (dict, list, str)):
             continue

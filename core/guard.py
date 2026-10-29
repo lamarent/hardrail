@@ -6,8 +6,8 @@ import shlex
 
 from core.argv import XARGS_ERR, skip_manager_opts, strip_env_and_wrappers, xargs_writes_command
 from core.config import find_root
-from core.packages import Package, resolve_package
-from core.shell import ParseError, _is_pipe, split_commands
+from core.packages import Package, find_workspace_root, resolve_package
+from core.shell import ParseError, _is_pipe, scan_opts, split_commands
 
 _PATH_ARG = re.compile(r'\.(test|spec)\.(ts|tsx|js|jsx)$')
 _SHORT_F = re.compile(r'^-[A-Za-z]*f[A-Za-z]*$')
@@ -28,6 +28,11 @@ _JEST_PATH_FLAGS = ('--testPathPattern', '--testPathPatterns')  # their value is
 _VITEST_SUBCMDS = ('related', 'bench', 'list')          # kept in the fix command
 _VITEST_LEADING = ('run', 'watch', 'dev') + _VITEST_SUBCMDS  # a leading one is a subcommand
 _ANY_PATTERN = ('', '.', '.*')                          # path patterns that match everything
+_DOCKER_BASES = ('docker', 'docker-compose', 'podman')
+_DOCKER_GLOBAL_VALUE = ('-H', '--host', '--context', '-c', '--config', '-l', '--log-level')
+_COMPOSE_VALUE = ('-f', '--file', '-p', '--project-name', '--env-file', '--profile', '--project-directory')
+_TAIL_VALUE = ('-n', '-c', '-s', '--lines', '--bytes', '--sleep-interval', '--pid', '--max-unchanged-stats')
+_DELETE_MSG = "deleting a remote branch is blocked; ask before deleting remote refs"
 
 
 def _is_scope(word):
@@ -223,6 +228,8 @@ def rule_force_push(simples, config, cwd="."):
             if a in ('--force', '--mirror') or _SHORT_F.match(a) or (a.startswith('+') and len(a) > 1):
                 return _result("block", "force_push",
                                "force push is blocked; use git push --force-with-lease", config)
+            if a in ('--delete', '-d') or (a.startswith(':') and len(a) > 1):
+                return _result("block", "force_push", _DELETE_MSG, config)
     return None
 
 
@@ -286,16 +293,55 @@ def _without(argv, drop):
     return [a for a in argv if a not in drop and a.partition('=')[0] not in drop]
 
 
+def _docker_logs_fix(c):
+    """`docker [opts] [compose [opts]] logs -f ...` -> the same without follow, with a tail."""
+    i = scan_opts(c, 1, _DOCKER_GLOBAL_VALUE)[0]
+    if i < len(c) and c[i] == 'compose':
+        i += 1
+    i = scan_opts(c, i, _COMPOSE_VALUE)[0]
+    if c[i:i + 1] != ['logs']:
+        return None
+    args = c[i + 1:]
+    if not any(a == '--follow' or _SHORT_F.match(a) for a in args):
+        return None
+    rest = [a if a in ('-f', '--follow') or not _SHORT_F.match(a) else a.replace('f', '') for a in args]
+    rest = _without(rest, ('-f', '--follow'))
+    tail = [] if any(a.startswith('--tail') or a == '-n' for a in rest) else ['--tail=200']
+    return "use " + ' '.join(c[:i + 1] + tail + rest)
+
+
+def _tail_fix(c):
+    """`tail -f/-F/--follow file...` -> `tail -n 200 file...`."""
+    follow, files, i = False, [], 1
+    while i < len(c):
+        a = c[i]
+        i += 1
+        if a == '--follow' or a.startswith('--follow='):
+            follow = True
+        elif a in _TAIL_VALUE:
+            i += 1
+        elif a.startswith('-') and not a.startswith('--') and len(a) > 1:
+            follow = follow or 'f' in a[1:] or 'F' in a[1:]
+            if a[-1] in 'ncs':  # `-fn 20`: the cluster ends in a value option
+                i += 1
+        elif not a.startswith('-'):
+            files.append(a)
+    return "use tail -n 200 " + (' '.join(files) or '<file>') if follow else None
+
+
 def _watch_fix(s, config, cwd):
     """The one-shot command for a watch-mode simple, or None when it does not watch."""
     env, argv = strip_env_and_wrappers(s.argv)
+    c = _strip_git(argv)
+    base = os.path.basename(c[0]) if c else ''
+    if base in _DOCKER_BASES:
+        fix = _docker_logs_fix([base] + c[1:])
+        if fix:
+            return fix
+    if base == 'tail':
+        return _tail_fix(c)
     if any(e.startswith('CI=') for e in env) and not _explicit_watch(argv):
         return None
-    c = _strip_git(argv)
-    if c[:3] == ['docker', 'compose', 'logs'] and ('-f' in c or '--follow' in c):
-        rest = _without(c[3:], ('-f', '--follow'))
-        tail = [] if any(a.startswith('--tail') or a == '-n' for a in rest) else ['--tail=200']
-        return "use " + ' '.join(c[:3] + tail + rest)
     if any(os.path.basename(a) in ('playwright', 'test:e2e') for a in c) and any(a in _E2E_WATCH for a in c):
         return "run it without the flag: " + ' '.join(_without(argv, _E2E_WATCH))
     hit = _runner(argv, config)
@@ -331,7 +377,7 @@ def _unscoped_decision(s, prev, name, args,
     if '--help' in args:
         return None
     argv = strip_env_and_wrappers(s.argv)[1]
-    root = find_root(cwd) or cwd
+    root = find_root(cwd) or find_workspace_root(cwd) or cwd
     pkg = resolve_package(s, cwd, config, root, prev=prev)
     base = config['defaults']['test']
     script = pkg.test_script.split() if isinstance(pkg, Package) and pkg.test_script else []

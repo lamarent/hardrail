@@ -9,7 +9,7 @@ cmd=${input#*\"command\":}
 # The keyword list MUST cover the first word (and subcommand) of every DEFAULTS
 # guard.gatedActions and heavy entry; test/adapters/test_claude.py checks it.
 case "$cmd" in
-  *test*|*vitest*|*jest*|*push*|*commit*|*reset*|*rebase*|*merge*|*stash*|*clean*|*gh*|*rm*|*docker*|*prisma*|*generate*|*install*|*build*|*playwright*|*logs*|*yarn*|*bun*|*npx*|*npm*) ;;
+  *test*|*vitest*|*jest*|*push*|*commit*|*reset*|*rebase*|*merge*|*stash*|*clean*|*gh*|*rm*|*docker*|*podman*|*turbo*|*tail*|*prisma*|*generate*|*install*|*build*|*playwright*|*logs*|*yarn*|*bun*|*npx*|*npm*) ;;
   *) exit 0 ;;
 esac
 if ! command -v python3 >/dev/null 2>&1; then

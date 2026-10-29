@@ -93,6 +93,23 @@ class ConfigTest(unittest.TestCase):
     def test_find_root_none(self):
         self.assertIsNone(config.find_root(tempfile.mkdtemp()))
 
+    def test_unknown_key_warns(self):
+        cfg = config.load(self._write('{"bogus": 1}'))
+        self.assertIn("unknown key bogus", cfg["_load_error"])
+        self.assertEqual(cfg["bogus"], 1)
+
+    def test_schema_keys_are_known(self):
+        cfg = config.load(fixture_root("full.json"))
+        self.assertNotIn("_load_error", cfg)
+
+    def test_schema_packages_shape(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "..", "schema", "hardrail.config.schema.json")
+        with open(path, encoding="utf-8") as f:
+            schema = json.load(f)
+        item = schema["properties"]["packages"]["additionalProperties"]
+        self.assertEqual(set(item["properties"]), {"test"})
+        self.assertEqual(item["properties"]["test"], {"type": "string"})
+
 
 if __name__ == "__main__":
     unittest.main()

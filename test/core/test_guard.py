@@ -106,6 +106,16 @@ class GuardTest(unittest.TestCase):
 
     def test_watch_fix_docker_logs(self):
         self.assertIn("use docker compose logs --tail=200 api", self._msg("docker compose logs -f api"))
+        self.assertIn("use docker compose -f dc.yml logs --tail=200", self._msg("docker compose -f dc.yml logs -f"))
+        self.assertIn("use docker logs -n 5 api", self._msg("docker logs --follow -n 5 api"))
+
+    def test_watch_fix_tail_keeps_files(self):
+        self.assertIn("use tail -n 200 a.log b.log", self._msg("tail -F a.log b.log"))
+        self.assertIn("use tail -n 200 a.log", self._msg("tail -fn 20 a.log"))
+
+    def test_push_delete_message(self):
+        self.assertIn("deleting a remote branch is blocked; ask before deleting remote refs",
+                      self._msg("git push origin :main"))
 
     def test_watch_fix_playwright_drops_flag(self):
         self.assertTrue(self._msg("pnpm exec playwright test --ui e2e/a.spec.ts")
