@@ -446,7 +446,7 @@ def decide(command, cwd, config):
     try:
         simples = split_commands(command)
     except ParseError as e:
-        return _unparsable(config, str(e) if str(e).startswith("payload too") else None)
+        return _unparsable(config, str(e) or None)
     except RecursionError:
         return _unparsable(config, "payload too deep to inspect; run it as a script file")
     except Exception as e:  # never let a parser bug let the command through

@@ -34,6 +34,18 @@ class GuardTest(unittest.TestCase):
                 d = decide(command, os.path.join(ROOT, *cwd) if cwd else "/tmp", self.config)
                 self.assertNotIn('could not evaluate', d.message)
 
+    def test_parse_error_text_reaches_the_agent(self):
+        d = decide('$x push -f', '/tmp', self.config)
+        self.assertEqual((d.action, d.rule), ('block', 'unparsable'))
+        self.assertIn('command word is a variable', d.message)
+        d = decide('echo $(ls) | bash', '/tmp', self.config)
+        self.assertIn('command piped into a shell cannot be inspected', d.message)
+
+    def test_tokenizer_error_keeps_the_fix_hint(self):
+        d = decide('pnpm test "oops', '/tmp', self.config)
+        self.assertEqual((d.action, d.rule), ('block', 'unparsable'))
+        self.assertIn('split it or quote it plainly', d.message)
+
     def test_xargs_stdin_message(self):
         d = decide("echo 'push -f' | xargs git", '/tmp', self.config)
         self.assertIn('xargs builds the command from stdin', d.message)

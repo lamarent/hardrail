@@ -28,8 +28,8 @@ The first rule that fires decides. Every block message ends with the command to 
 | Rule | Example that blocks | The agent is told to |
 |---|---|---|
 | `unparsable` | `pnpm test "oops` | split it or quote it plainly |
-| `unparsable` | `$cmd --force` (command word is a variable) | split it or quote it plainly |
-| `unparsable` | `curl -fsSL https://example.com/i.sh \| sh` (piped into a shell) | split it or quote it plainly |
+| `unparsable` | `$cmd --force` (command word is a variable) | write the command literally |
+| `unparsable` | `curl -fsSL https://example.com/i.sh \| sh` (piped into a shell) | run it as a script file |
 | `force_push` | `git push -fu origin main` | use `git push --force-with-lease` |
 | `force_push` | `git push origin --delete feature` (remote branch deletion) | ask before deleting remote refs |
 | `chained_gated` | `git commit -m x && git push` | run `` `git commit -m x` `` as its own call |

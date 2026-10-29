@@ -59,7 +59,7 @@ same report on the adopter's own transcripts.
 - Hooks: python3 stdlib only, self-contained files copied into the adopting repo; a bash
   fast path exits early for commands that contain no gated keyword. No `jq`, no Node, no
   import from the plugin directory.
-- Hook p95 latency < 100 ms, measured in this repo's CI, cold and warm.
+- Hook p95 latency < 100 ms, measured in this repo's CI, warm.
 - Minimum Claude Code version pinned in the manifest (the version where plugin `bin/`,
   `${CLAUDE_PLUGIN_DATA}`, `PostCompact` and `.worktreeinclude` all exist).
 - One language: python3 ≥ 3.9 stdlib for core, adapters and `bin/hardrail`. No Node

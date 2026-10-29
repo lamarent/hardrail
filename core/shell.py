@@ -230,7 +230,7 @@ def _split_plain(text):
     try:
         tokens = list(lex)
     except ValueError as e:
-        raise ParseError(str(e)) from e
+        raise ParseError("cannot parse command (%s); split it or quote it plainly" % e) from e
     spans = _spans(prot)
     use_spans = len(spans) == len(tokens)
     result = []

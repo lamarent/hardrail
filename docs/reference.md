@@ -60,7 +60,7 @@ Order matters: the first rule that fires decides.
 
 | Rule | What it catches | Blocks, for example | The message tells the agent to |
 |---|---|---|---|
-| `unparsable` | a command the tokenizer cannot split safely; an oversized shell payload; `xargs` fed by a pipe that runs a command which is not read-only | `pnpm test "oops`, `ls \| xargs rm` | split it or quote it plainly / run it as a script file / list the files explicitly |
+| `unparsable` | a command the tokenizer cannot split safely; an oversized shell payload; `xargs` fed by a pipe that runs a command which is not read-only | `pnpm test "oops`, `ls \| xargs rm` | split it or quote it plainly / write the command literally / run it as a script file / list the files explicitly; the message names the construct |
 | `force_push` | `git push` with `--force`, `-f` or `-d` in a short-flag cluster, `--mirror`, `--delete`, a `+refspec` or a `:branch` refspec; `git` found by basename, git globals (`-C`, `-c`, `--git-dir`, …) skipped | `/usr/bin/git push --force origin main` | use `git push --force-with-lease` / ask before deleting remote refs |
 | `chained_gated` | two or more commands in one call where any of them starts with a `guard.gatedActions` prefix; a gated action inside a payload counts when the whole command has more than one command | `git commit -m x && git push` | run `` `git commit -m x` `` as its own call |
 | `watch_mode` | bare `vitest` without `--run`; `jest --watch`/`--watchAll`; an explicit `--watch` on a test script; `test:watch`; `docker compose logs -f`; `docker logs -f`; `tail -f`; `playwright`/`test:e2e` with `--ui`, `--watch` or `--debug` | `docker compose logs -f api` | `use docker compose logs --tail=200 api` (each case gets its own one-shot form) |
