@@ -62,6 +62,23 @@ class SplitTests(unittest.TestCase):
         self.assertIn(['git', 'push'], self.argvs('echo hi # <<EOF\ngit push\nEOF'))
         self.assertIn(['git', 'push'], self.argvs('echo "<<EOF"\ngit push'))
 
+    def test_comment_dropped(self):
+        self.assertEqual(self.argvs('pnpm test # src/'), [['pnpm', 'test']])
+
+    def test_quoted_hash_kept(self):
+        self.assertEqual(self.argvs('git push origin "#1" --force'),
+                         [['git', 'push', 'origin', '#1', '--force']])
+        self.assertEqual(self.argvs("echo '#tag'"), [['echo', '#tag']])
+
+    def test_mid_word_hash_kept(self):
+        self.assertEqual(self.argvs('echo a#b'), [['echo', 'a#b']])
+
+    def test_comment_ends_at_newline(self):
+        self.assertEqual(self.argvs('ls # c\npwd'), [['ls'], ['pwd']])
+
+    def test_heredoc_with_trailing_comment(self):
+        self.assertIn(['pnpm', 'test'], self.argvs('bash <<EOF # c\npnpm test\nEOF'))
+
     def test_raw_preserves_source(self):
         s = split_commands('git commit -m "a  b" && ls')
         self.assertEqual(s[0].raw, 'git commit -m "a  b"')

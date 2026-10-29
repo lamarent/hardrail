@@ -72,6 +72,10 @@ def _protect(cmd: str) -> Tuple[str, List[int]]:
                 continue
             if c in '\'"':
                 q = c
+            elif c == '#' and (i == 0 or cmd[i - 1] in ' \t\r\n;&|('):
+                while i < n and cmd[i] != '\n':
+                    i += 1
+                continue
             elif c == '&' and ((i > 0 and cmd[i - 1] in '<>') or (i + 1 < n and cmd[i + 1] == '>')):
                 put(_SENT['&'], i)
                 i += 1

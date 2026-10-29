@@ -49,6 +49,13 @@ ROWS = [
     ("git push --force-with-lease", "allow", ""),
     ("git push origin main", "allow", ""),
     ('echo "git push --force"', "allow", ""),
+    ('git push origin "#1" --force', "block", "force_push"),
+    ("pnpm vitest", "block", "watch_mode"),
+    ("pnpm vitest --run", "block", "unscoped_test"),
+    ("pnpm vitest --run src/a.test.ts", "allow", ""),
+    ("sudo pnpm test", "block", "unscoped_test"),
+    ("time pnpm test", "block", "unscoped_test"),
+    ("env CI=1 pnpm test src/a.test.ts", "allow", ""),
     # heavy and unparsable
     ("pnpm build", "warn", "heavy"),
     ("pnpm generate:orval", "warn", "heavy"),

@@ -14,6 +14,7 @@ _ENV = re.compile(r'^[A-Za-z_]\w*=')
 _PATH_ARG = re.compile(r'\.(test|spec)\.(ts|tsx|js|jsx)$')
 _SHORT_F = re.compile(r'^-[A-Za-z]*f[A-Za-z]*$')
 _RUNNERS = ('vitest', 'jest')
+_WRAPPERS = ('sudo', 'time', 'env', 'nohup', 'command', 'exec')
 _PKG_MANAGERS = ('pnpm', 'npm', 'yarn', 'bun')
 _VALUE_FLAGS = ('-C', '--filter', '-F', '--dir', '--prefix', '--cwd')
 _RUN_FLAGS = ('--run', 'run', '--watch=false', '--no-watch')
@@ -37,19 +38,10 @@ def resolve_package(simple, cwd, config, repo_root):
     return None
 
 
-def _argv(s: Simple) -> List[str]:
-    """argv without a trailing shell comment."""
-    out: List[str] = []
-    for tok in s.argv:
-        if tok.startswith('#'):
-            break
-        out.append(tok)
-    return out
-
-
 def _strip_env(argv: List[str]) -> Tuple[List[str], List[str]]:
+    """Split leading env assignments and wrappers (sudo, time, env...) from the command."""
     i = 0
-    while i < len(argv) and _ENV.match(argv[i]):
+    while i < len(argv) and (_ENV.match(argv[i]) or os.path.basename(argv[i]) in _WRAPPERS):
         i += 1
     return argv[:i], argv[i:]
 
@@ -65,7 +57,7 @@ def _strip_git(argv: List[str]) -> List[str]:
 
 
 def _cmd(s: Simple) -> List[str]:
-    return _strip_git(_strip_env(_argv(s))[1])
+    return _strip_git(_strip_env(s.argv)[1])
 
 
 def _skip_opts(args: List[str]) -> List[str]:
@@ -107,10 +99,9 @@ def _runner(argv: List[str], config: dict) -> Optional[Tuple[str, List[str]]]:
         rest = _skip_opts(argv[1:])
         if not rest:
             return None
-        if rest[0] in ('exec', 'dlx') or base == 'yarn':
-            hit = _direct(_skip_opts(rest[1:] if rest[0] in ('exec', 'dlx') else rest))
-            if hit:
-                return hit
+        hit = _direct(_skip_opts(rest[1:]) if rest[0] in ('exec', 'dlx') else rest)
+        if hit:
+            return hit
         if rest[0] == 'run' and len(rest) > 1:
             rest = rest[1:]
         if _is_script(rest[0]):
@@ -179,7 +170,7 @@ def rule_chained_gated(simples: List[Simple], config: dict) -> Optional[Decision
 
 
 def _watch_mode(s: Simple, config: dict) -> bool:
-    env, argv = _strip_env(_argv(s))
+    env, argv = _strip_env(s.argv)
     if any(e.startswith('CI=') for e in env):
         return False
     c = _strip_git(argv)
@@ -207,7 +198,7 @@ def rule_watch_mode(simples: List[Simple], config: dict) -> Optional[Decision]:
 
 def rule_unscoped_test(simples: List[Simple], config: dict) -> Optional[Decision]:
     for s in simples:
-        hit = _runner(_strip_env(_argv(s))[1], config)
+        hit = _runner(_strip_env(s.argv)[1], config)
         if not hit:
             continue
         args = hit[1]
