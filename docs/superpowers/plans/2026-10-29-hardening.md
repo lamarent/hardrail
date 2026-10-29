@@ -19,7 +19,7 @@
 - No repository, company, product, ticket or person name anywhere, including fixtures and commit messages (`python3 -m unittest test.test_no_leak` must pass).
 - Every bypass in the review becomes a row in `test/core/guard_table.py` **before** its fix; the row asserts action **and** rule.
 - Run after every task: `python3 -m unittest discover -s test -t .` → `OK`; `python3 test/bench_guard.py` → exit 0.
-- Commit after every task; messages in English, ending with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
+- Commit after every task; messages in English, ending with the session's attribution trailer.
 
 ## Rulings (recorded here so implementers do not re-decide them)
 
